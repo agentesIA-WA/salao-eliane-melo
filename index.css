@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --color-luxury-50: #fbfbf9;
+  --color-luxury-100: #f3f2ee;
+  --color-luxury-200: #e6e3da;
+  --color-luxury-300: #d0cabb;
+  --color-luxury-400: #b5ac96;
+  --color-luxury-500: #9e9378;
+  --color-luxury-600: #887a60;
+  --color-luxury-700: #716450;
+  --color-luxury-800: #5f5446;
+  --color-luxury-900: #4e453a;
+  --color-primary-50: #fdf2f8;
+  --color-primary-100: #fce7f3;
+  --color-primary-200: #fbcfe8;
+  --color-primary-300: #f9a8d4;
+  --color-primary-400: #f472b6;
+  --color-primary-500: #ec4899;
+  --color-primary-600: #db2777;
+  --color-primary-700: #be185d;
+  --color-primary-800: #9d174d;
+  --color-primary-900: #831843;
+  --color-primary-950: #500724;
+}
+
+/* Custom styles specific to the salon */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-slate-200);
+    border-radius: 20px;
+  }
+}

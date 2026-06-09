@@ -1,0 +1,6 @@
+{
+  "name": "Agenda",
+  "description": "A comprehensive beauty salon management application featuring separate portals for Clients (booking, history) and Administrators (schedule management, service CRUD, AI-assisted communication).",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
