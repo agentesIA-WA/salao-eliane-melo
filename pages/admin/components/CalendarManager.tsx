@@ -80,7 +80,9 @@ const CalendarManager: React.FC = () => {
         serviceId: '',
         professionalId: '',
         date: '',
-        time: ''
+        time: '',
+        status: '' as string,
+        observations: ''
     });
 
     const handleOpenEditModal = (apt: Appointment) => {
@@ -92,7 +94,9 @@ const CalendarManager: React.FC = () => {
             serviceId: apt.serviceId || '',
             professionalId: apt.professionalId || '',
             date: apt.date || '',
-            time: apt.time || ''
+            time: apt.time || '',
+            status: apt.status || '',
+            observations: apt.observations || ''
         });
     };
 
@@ -106,15 +110,43 @@ const CalendarManager: React.FC = () => {
                 serviceId: editForm.serviceId,
                 professionalId: editForm.professionalId,
                 date: editForm.date,
-                time: editForm.time
+                time: editForm.time,
+                status: editForm.status as AppointmentStatus,
+                observations: editForm.observations
             });
             setEditApt(null);
         }
     };
 
+    const newSelectedServiceIds = newAptForm.serviceId ? newAptForm.serviceId.split(',').filter(Boolean) : [];
+    const exactNewPros = newSelectedServiceIds.length > 0
+        ? professionals.filter(p => newSelectedServiceIds.every(sid => p.specialties.includes(sid)))
+        : [];
+    const filteredProfessionals = newSelectedServiceIds.length > 0
+        ? (exactNewPros.length > 0
+            ? exactNewPros
+            : professionals.filter(p => newSelectedServiceIds.some(sid => p.specialties.includes(sid))))
+        : [];
+
+    const handleNewServiceToggle = (serviceId: string) => {
+        const current = newAptForm.serviceId ? newAptForm.serviceId.split(',').filter(Boolean) : [];
+        let updated: string[];
+        if (current.includes(serviceId)) {
+            updated = current.filter(id => id !== serviceId);
+        } else {
+            updated = [...current, serviceId];
+        }
+        setNewAptForm({ ...newAptForm, serviceId: updated.join(','), professionalId: '' });
+    };
+
     const editSelectedServiceIds = editForm.serviceId ? editForm.serviceId.split(',').filter(Boolean) : [];
-    const filteredProfessionalsForEdit = editSelectedServiceIds.length > 0
+    const exactEditPros = editSelectedServiceIds.length > 0
         ? professionals.filter(p => editSelectedServiceIds.every(sid => p.specialties.includes(sid)) || p.id === editForm.professionalId)
+        : [];
+    const filteredProfessionalsForEdit = editSelectedServiceIds.length > 0
+        ? (exactEditPros.length > 0
+            ? exactEditPros
+            : professionals.filter(p => editSelectedServiceIds.some(sid => p.specialties.includes(sid)) || p.id === editForm.professionalId))
         : professionals;
 
     const handleEditServiceToggle = (serviceId: string) => {
@@ -182,10 +214,6 @@ const CalendarManager: React.FC = () => {
             });
         }
     };
-
-    const filteredProfessionals = newAptForm.serviceId 
-        ? professionals.filter(p => p.specialties.includes(newAptForm.serviceId))
-        : [];
 
     const sortedApts = [...appointments].sort((a, b) => b.id.localeCompare(a.id));
 
@@ -483,15 +511,32 @@ const CalendarManager: React.FC = () => {
                     </div>
                     
                     <div className="w-full">
-                        <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Serviço de Beleza</label>
-                        <select 
-                            className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 focus:bg-white text-slate-800 text-sm md:text-base outline-none cursor-pointer"
-                            value={newAptForm.serviceId}
-                            onChange={e => setNewAptForm({...newAptForm, serviceId: e.target.value, professionalId: ''})}
-                        >
-                            <option value="">Selecione...</option>
-                            {services.map(s => <option key={s.id} value={s.id}>{s.name} (R$ {Number(s.price).toFixed(2)})</option>)}
-                        </select>
+                        <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Serviços de Beleza</label>
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                            {services.map(s => {
+                                const isSelected = newSelectedServiceIds.includes(s.id);
+                                return (
+                                    <div
+                                        key={s.id}
+                                        onClick={() => handleNewServiceToggle(s.id)}
+                                        className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors ${isSelected ? 'bg-primary-50/60' : 'hover:bg-slate-100/50'}`}
+                                    >
+                                        <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${isSelected ? 'bg-primary-600 border-primary-600 text-white' : 'border-slate-300 bg-white'}`}>
+                                            {isSelected && <Check size={12} strokeWidth={3} />}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <span className="text-sm font-medium text-slate-800 truncate block">{s.name}</span>
+                                        </div>
+                                        <span className="text-xs font-bold text-primary-600 shrink-0">R$ {Number(s.price).toFixed(2)}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        {newSelectedServiceIds.length > 0 && (
+                            <p className="text-[11px] text-slate-500 mt-1.5 font-medium">
+                                {newSelectedServiceIds.length} serviço(s) selecionado(s) • Total: R$ {services.filter(s => newSelectedServiceIds.includes(s.id)).reduce((sum, s) => sum + Number(s.price), 0).toFixed(2)}
+                            </p>
+                        )}
                     </div>
 
                     <div className="w-full">
@@ -500,9 +545,9 @@ const CalendarManager: React.FC = () => {
                             className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 focus:bg-white text-slate-800 text-sm md:text-base outline-none cursor-pointer disabled:opacity-50"
                             value={newAptForm.professionalId}
                             onChange={e => setNewAptForm({...newAptForm, professionalId: e.target.value})}
-                            disabled={!newAptForm.serviceId}
+                            disabled={newSelectedServiceIds.length === 0}
                         >
-                            <option value="">{newAptForm.serviceId ? "Selecione o artista..." : "Selecione o serviço primeiro..."}</option>
+                            <option value="">{newSelectedServiceIds.length > 0 ? "Selecione o artista..." : "Selecione ao menos um serviço primeiro..."}</option>
                             {filteredProfessionals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
                     </div>
@@ -607,6 +652,42 @@ const CalendarManager: React.FC = () => {
                                  value={editForm.time} 
                                  onChange={e => setEditForm({...editForm, time: e.target.value})} 
                              />
+                         </div>
+
+                         <div className="w-full">
+                             <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Status do Atendimento</label>
+                             <div className="relative">
+                                 <select
+                                     value={editForm.status}
+                                     onChange={e => setEditForm({...editForm, status: e.target.value})}
+                                     className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 focus:bg-white text-slate-800 text-sm md:text-base outline-none cursor-pointer appearance-none"
+                                 >
+                                     {Object.values(AppointmentStatus).map(s => (
+                                         <option key={s} value={s}>{s}</option>
+                                     ))}
+                                 </select>
+                                 <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+                                     <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                                         editForm.status === AppointmentStatus.CONFIRMED ? 'bg-green-500' :
+                                         editForm.status === AppointmentStatus.COMPLETED ? 'bg-blue-500' :
+                                         editForm.status === AppointmentStatus.IN_PROGRESS ? 'bg-purple-500' :
+                                         editForm.status === AppointmentStatus.CANCELLED ? 'bg-red-500' :
+                                         'bg-yellow-400'
+                                     }`}></span>
+                                 </div>
+                             </div>
+                         </div>
+
+                         <div className="w-full">
+                             <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Observações do Agendamento</label>
+                             <textarea
+                                 value={editForm.observations}
+                                 onChange={e => setEditForm({...editForm, observations: e.target.value})}
+                                 placeholder="Ex: Cliente preferiu horário da tarde, alergia a determinado produto, pediu corte curto..."
+                                 rows={3}
+                                 className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 focus:bg-white text-slate-800 text-sm md:text-base resize-none placeholder:text-slate-400"
+                             />
+                             <p className="text-[11px] text-slate-400 mt-1">Anotações internas — visíveis apenas para a administração do salão.</p>
                          </div>
 
                          <Button fullWidth onClick={handleUpdateApt} className="mt-4">Salvar Alterações / Reagendar</Button>

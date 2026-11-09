@@ -1,21 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useApp } from '../../../contexts/AppContext';
 import { Appointment, AppointmentStatus, Service, Professional, BusinessConfig } from '../../../types';
 import { Button, Card, Badge, Input, Modal } from '../../../components/Shared';
-import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, Plus, Trash2, Check, X, Clock, Pencil, Briefcase, Settings, Loader2, Coffee, Phone, Mail, Sparkles, AlertCircle, Lock, Upload, ImageIcon, Link as LinkIcon, Info } from 'lucide-react';
+import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, Plus, Trash2, Check, X, Clock, Pencil, Briefcase, Settings, Loader2, Coffee, Phone, Mail, Sparkles, AlertCircle, Lock, Upload, ImageIcon, Link as LinkIcon, Info, Download, FileSpreadsheet, AlertTriangle } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { getGoogleDriveThumbnail, isGoogleDriveLink } from '../../../services/driveUtils';
+import * as XLSX from 'xlsx';
 
 const ServicesManager: React.FC = () => {
     const { services, deleteService, addService, updateService } = useApp();
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isImportModalOpen, setIsImportModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [serviceForm, setServiceForm] = useState<Partial<Service>>({ name: '', price: 0, durationMinutes: 60, imageUrl: '', observation: '' });
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
     const [imageInputMode, setImageInputMode] = useState<'upload' | 'url'>('upload');
+    const [importFile, setImportFile] = useState<File | null>(null);
+    const [importPreview, setImportPreview] = useState<Partial<Service>[]>([]);
+    const [importError, setImportError] = useState('');
+    const [isImporting, setIsImporting] = useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const importFileInputRef = React.useRef<HTMLInputElement>(null);
 
     const handleImageUpload = async (file: File) => {
         setIsUploading(true);
@@ -103,7 +110,21 @@ const ServicesManager: React.FC = () => {
                   <h2 className="text-3xl font-serif font-bold text-slate-900 tracking-wide">Catálogo de Serviços</h2>
                   <p className="text-slate-400 text-sm mt-1">Gerencie a cartela de serviços de estética ofertados por seu salão.</p>
                 </div>
-                <Button onClick={handleAddNew} className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2.5 px-5 self-start sm:self-auto rounded-xl flex items-center gap-1.5"><Plus size={18} /> Novo Serviço</Button>
+                <div className="flex flex-col sm:flex-row gap-3 self-start sm:self-auto">
+                    <Button 
+                        onClick={() => {
+                            setImportFile(null);
+                            setImportPreview([]);
+                            setImportError('');
+                            setIsImportModalOpen(true);
+                        }} 
+                        variant="outline"
+                        className="bg-white hover:bg-slate-50 border-slate-200 text-slate-700 font-medium py-2.5 px-5 rounded-xl flex items-center gap-1.5"
+                    >
+                        <FileSpreadsheet size={18} /> Importar Planilha
+                    </Button>
+                    <Button onClick={handleAddNew} className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2.5 px-5 rounded-xl flex items-center gap-1.5"><Plus size={18} /> Novo Serviço</Button>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -325,9 +346,290 @@ const ServicesManager: React.FC = () => {
                     <Button fullWidth onClick={handleSubmit} className="mt-4">Confirmar Alterações</Button>
                 </div>
             </Modal>
+
+            {/* Import Modal */}
+            <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="Importar Serviços via Planilha" size="lg">
+                <div className="space-y-4">
+                    {/* Download Template */}
+                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                        <div className="flex items-center gap-3">
+                            <FileSpreadsheet size={24} className="text-blue-600" />
+                            <div>
+                                <p className="font-semibold text-blue-800">Baixe o modelo de planilha</p>
+                                <p className="text-sm text-blue-600 mt-0.5">Preencha a planilha com seus serviços e faça o upload abaixo</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={downloadTemplate}
+                            className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                        >
+                            <Download size={16} /> Baixar Modelo (.xlsx)
+                        </button>
+                    </div>
+
+                    {/* File Upload */}
+                    <div className="space-y-3">
+                        <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider">Selecione a planilha (.xlsx, .xls, .csv)</label>
+                        <div
+                            onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const file = e.dataTransfer.files?.[0];
+                                if (file && (file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.csv'))) {
+                                    handleImportFileSelect(file);
+                                } else {
+                                    setImportError('Formato inválido. Use .xlsx, .xls ou .csv');
+                                }
+                            }}
+                            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onClick={() => importFileInputRef.current?.click()}
+                            className={`relative border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all duration-300 ${
+                                importFile
+                                    ? 'border-green-300 bg-green-50/30'
+                                    : 'border-slate-200 bg-slate-50/50 hover:border-primary-400 hover:bg-primary-50/30'
+                            }`}
+                        >
+                            <input
+                                ref={importFileInputRef}
+                                type="file"
+                                accept=".xlsx,.xls,.csv"
+                                onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleImportFileSelect(file);
+                                }}
+                                className="hidden"
+                            />
+
+                            {importFile ? (
+                                <div className="flex flex-col items-center gap-3">
+                                    <div className="flex items-center gap-3 p-3 bg-white rounded-xl border border-green-200 w-full max-w-md">
+                                        <FileSpreadsheet size={28} className="text-green-600" />
+                                        <div className="flex-1 text-left min-w-0">
+                                            <p className="font-semibold text-green-800 truncate">{importFile.name}</p>
+                                            <p className="text-xs text-green-600">{(importFile.size / 1024).toFixed(1)} KB</p>
+                                        </div>
+                                        <button
+                                            onClick={() => { setImportFile(null); setImportPreview([]); setImportError(''); importFileInputRef.current!.value = ''; }}
+                                            className="text-red-500 hover:text-red-700 p-1"
+                                        >
+                                            <X size={20} />
+                                        </button>
+                                    </div>
+                                    {importPreview.length > 0 && (
+                                        <button
+                                            onClick={handleImportConfirm}
+                                            disabled={isImporting}
+                                            className="w-full max-w-md px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                                        >
+                                            {isImporting ? (
+                                                <>
+                                                    <Loader2 size={16} className="animate-spin" />
+                                                    Importando {importPreview.length} serviços...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Check size={16} />
+                                                    Confirmar Importação de {importPreview.length} serviços
+                                                </>
+                                            )}
+                                        </button>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="flex flex-col items-center gap-2 py-2">
+                                    <div className="w-14 h-14 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
+                                        <FileSpreadsheet size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-semibold text-slate-600">Arraste a planilha aqui</p>
+                                        <p className="text-[11px] text-slate-400 mt-0.5">ou <span className="text-primary-600 font-bold">clique para selecionar</span></p>
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 mt-1">Formatos: .xlsx, .xls, .csv • Máximo 5MB</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {importError && (
+                            <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2">
+                                <AlertTriangle size={14} className="text-red-500 shrink-0" />
+                                <p className="text-[11px] text-red-700 font-semibold">{importError}</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Preview */}
+                    {importPreview.length > 0 && (
+                        <div className="space-y-2 max-h-64 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50/50">
+                            <p className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">Prévia dos serviços a serem importados ({importPreview.length})</p>
+                            {importPreview.map((svc, idx) => (
+                                <div key={idx} className="flex items-center justify-between gap-2 p-2 bg-white rounded-lg border border-slate-100">
+                                    <div className="flex-1 min-w-0">
+                                        <p className="font-medium text-slate-900 text-sm truncate">{svc.name}</p>
+                                        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500">
+                                            {svc.groupName && <span className="px-2 py-0.5 bg-primary-50 text-primary-700 rounded text-xs">{svc.groupName}</span>}
+                                            <span>R$ {Number(svc.price).toFixed(2)}</span>
+                                            <span>{svc.durationMinutes} min</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Instructions */}
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <p className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                            <Info size={13} /> Instruções
+                        </p>
+                        <ul className="text-[11px] text-slate-600 space-y-1">
+                            <li>• <strong>Nome</strong> (obrigatório): Nome do serviço</li>
+                            <li>• <strong>Grupo</strong> (opcional): Categoria do serviço (ex: Cabelo, Unhas, Estética)</li>
+                            <li>• <strong>Descrição</strong> (opcional): Detalhes do atendimento</li>
+                            <li>• <strong>Preço</strong> (obrigatório): Valor em reais (ex: 85.00)</li>
+                            <li>• <strong>Duração (min)</strong> (opcional): Tempo em minutos (padrão: 60)</li>
+                            <li>• <strong>Observação</strong> (opcional): Informações extras para o cliente</li>
+                            <li>• <strong>Imagem URL</strong> (opcional): Link da foto do serviço</li>
+                        </ul>
+                    </div>
+                </div>
+            </Modal>
         </div>
     )
 }
+
+// Helper functions for import
+const downloadTemplate = () => {
+    const templateData = [
+        { 
+            'Nome*': 'Corte Feminino', 
+            'Grupo': 'Cabelo', 
+            'Descrição': 'Corte com lavagem e finalização', 
+            'Preço*': 85.00, 
+            'Duração (min)': 60, 
+            'Observação': 'Inclui lavagem e secagem',
+            'Imagem URL': ''
+        },
+        { 
+            'Nome*': 'Manicure Simples', 
+            'Grupo': 'Unhas', 
+            'Descrição': 'Corte, lixamento e esmaltação', 
+            'Preço*': 35.00, 
+            'Duração (min)': 45, 
+            'Observação': 'Esmalte não incluso',
+            'Imagem URL': ''
+        },
+        { 
+            'Nome*': 'Limpeza de Pele', 
+            'Grupo': 'Estética', 
+            'Descrição': 'Limpeza profunda com extração', 
+            'Preço*': 120.00, 
+            'Duração (min)': 90, 
+            'Observação': 'Não indicado para pele sensível',
+            'Imagem URL': ''
+        },
+    ];
+
+    const ws = XLSX.utils.json_to_sheet(templateData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Serviços');
+    XLSX.writeFile(wb, 'modelo_servicos.xlsx');
+};
+
+const handleImportFileSelect = (file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+        setImportError('Arquivo muito grande. Tamanho máximo: 5MB');
+        return;
+    }
+
+    setImportFile(file);
+    setImportError('');
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = new Uint8Array(e.target?.result as ArrayBuffer);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+            const preview: Partial<Service>[] = [];
+            const errors: string[] = [];
+
+            jsonData.forEach((row: any, index: number) => {
+                const rowNum = index + 2; // +2 because header is row 1, 0-indexed
+                const name = (row['Nome*'] || row['Nome'] || row['nome'] || '').toString().trim();
+                const groupName = (row['Grupo'] || row['grupo'] || '').toString().trim();
+                const description = (row['Descrição'] || row['Descricao'] || row['descrição'] || row['descricao'] || '').toString().trim();
+                const price = parseFloat((row['Preço*'] || row['Preco*'] || row['Preço'] || row['Preco'] || row['preço'] || row['preco'] || '0').toString().replace(',', '.'));
+                const durationMinutes = parseInt((row['Duração (min)'] || row['Duracao (min)'] || row['Duração'] || row['Duracao'] || row['duração'] || row['duracao'] || '60').toString()) || 60;
+                const observation = (row['Observação'] || row['Observacao'] || row['observação'] || row['observacao'] || '').toString().trim();
+                const imageUrl = (row['Imagem URL'] || row['Imagem'] || row['imagem'] || row['Image URL'] || row['image'] || '').toString().trim();
+
+                if (!name) {
+                    errors.push(`Linha ${rowNum}: Nome é obrigatório`);
+                    return;
+                }
+                if (isNaN(price) || price <= 0) {
+                    errors.push(`Linha ${rowNum}: Preço inválido`);
+                    return;
+                }
+
+                preview.push({
+                    name,
+                    groupName: groupName || '',
+                    description: description || 'Serviço importado via planilha',
+                    price,
+                    durationMinutes,
+                    observation: observation || '',
+                    imageUrl: imageUrl || `https://picsum.photos/400/300?random=${Date.now() + index}`,
+                });
+            });
+
+            if (errors.length > 0) {
+                setImportError(errors.join('; '));
+                setImportPreview([]);
+            } else if (preview.length === 0) {
+                setImportError('Nenhum serviço válido encontrado na planilha');
+                setImportPreview([]);
+            } else {
+                setImportPreview(preview);
+            }
+        } catch (err) {
+            setImportError('Erro ao ler a planilha. Verifique o formato do arquivo.');
+            setImportPreview([]);
+        }
+    };
+    reader.readAsArrayBuffer(file);
+};
+
+const handleImportConfirm = async () => {
+    if (importPreview.length === 0 || isImporting) return;
+
+    setIsImporting(true);
+    setImportError('');
+
+    try {
+        for (const svc of importPreview) {
+            await addService({
+                name: svc.name!,
+                groupName: svc.groupName?.trim() || '',
+                price: Number(svc.price),
+                durationMinutes: Number(svc.durationMinutes || 60),
+                description: svc.description || 'Serviço importado via planilha',
+                imageUrl: svc.imageUrl || `https://picsum.photos/400/300?random=${Date.now()}`,
+                observation: svc.observation || ''
+            });
+        }
+        setIsImportModalOpen(false);
+        setImportFile(null);
+        setImportPreview([]);
+    } catch (err) {
+        setImportError('Erro ao importar serviços. Tente novamente.');
+    } finally {
+        setIsImporting(false);
+    }
+};
 
 
 export default ServicesManager;

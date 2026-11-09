@@ -5,7 +5,7 @@ import {
     isSameDay, isSameMonth, parseISO, isToday 
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Scissors, MessageCircle, Pencil } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Scissors, MessageCircle, Pencil, FileText } from 'lucide-react';
 import { Appointment, AppointmentStatus, Service, Professional, BusinessConfig } from '../types';
 import { Badge } from './Shared';
 
@@ -25,11 +25,13 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
     const [currentDate, setCurrentDate] = useState(new Date());
 
     const sortedApts = useMemo(() => {
-        return [...appointments].sort((a, b) => {
-            const dateA = parseISO(`${a.date}T${a.time || '00:00'}`);
-            const dateB = parseISO(`${b.date}T${b.time || '00:00'}`);
-            return dateA.getTime() - dateB.getTime();
-        });
+        return appointments
+            .filter(a => a.status !== AppointmentStatus.CANCELLED)
+            .sort((a, b) => {
+                const dateA = parseISO(`${a.date}T${a.time || '00:00'}`);
+                const dateB = parseISO(`${b.date}T${b.time || '00:00'}`);
+                return dateA.getTime() - dateB.getTime();
+            });
     }, [appointments]);
 
     const navigatePrevious = () => {
@@ -235,6 +237,12 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
                             <span className="flex items-center gap-1.5 font-medium"><MessageCircle size={14} className="text-slate-400" /> {apt.clientPhone}</span>
                         )}
                     </div>
+                    {apt.observations && (
+                        <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                            <FileText size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                            <p className="text-xs text-amber-800 leading-relaxed">{apt.observations}</p>
+                        </div>
+                    )}
                 </div>
                 <div className="flex flex-col gap-2 shrink-0 justify-center">
                     <button onClick={() => onEdit(apt)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors" title="Editar / Reagendar">

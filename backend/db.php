@@ -9,16 +9,27 @@ $envFile = __DIR__ . '/.env';
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
-        if (strpos(trim($line), '#') === 0) continue; // Ignorar comentários
+        $line = trim($line);
+        $line = preg_replace('/^(?:\\n|\\r)+/', '', $line);
+        if ($line === '' || strpos($line, '#') === 0) continue; // Ignorar comentários
         if (strpos($line, '=') === false) continue;
         list($key, $value) = explode('=', $line, 2);
         $key = trim($key);
         $value = trim($value);
-        if (!array_key_exists($key, $_ENV)) {
-            putenv("$key=$value");
-            $_ENV[$key] = $value;
+        if ($key === '') continue;
+        if (function_exists('putenv')) {
+            @putenv("$key=$value");
         }
+        $_ENV[$key] = $value;
     }
+}
+
+function getEnvVar($key, $default = '') {
+    if (isset($_ENV[$key]) && $_ENV[$key] !== '') {
+        return $_ENV[$key];
+    }
+    $val = function_exists('getenv') ? getenv($key) : false;
+    return ($val !== false && $val !== '') ? $val : $default;
 }
 
 // Headers CORS e Content-Type
@@ -27,19 +38,20 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     exit;
 }
 
 function getDB() {
-    $host = getenv('DB_HOST') ?: 'localhost';
-    $name = getenv('DB_NAME') ?: '';
-    $user = getenv('DB_USER') ?: '';
-    $pass = getenv('DB_PASS') ?: '';
+    $host = getEnvVar('DB_HOST', 'localhost');
+    $port = getEnvVar('DB_PORT', '');
+    $name = getEnvVar('DB_NAME', '');
+    $user = getEnvVar('DB_USER', '');
+    $pass = getEnvVar('DB_PASS', '');
 
     try {
         $db = new PDO(
-            "mysql:host=$host;dbname=$name;charset=utf8mb4",
+            "mysql:host=$host" . ($port !== '' ? ";port=$port" : '') . ";dbname=$name;charset=utf8mb4",
             $user,
             $pass,
             [
@@ -61,7 +73,7 @@ function getDB() {
  * Usado para proteger rotas de escrita (POST/PUT/DELETE) que não sejam de auth.
  */
 function requireAdminAuth() {
-    $token = getenv('ADMIN_API_TOKEN') ?: '';
+    $token = getEnvVar('ADMIN_API_TOKEN', '');
     if (empty($token)) return; // Se não configurado, não exige (compatibilidade)
 
     $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';

@@ -1,14 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../contexts/AppContext';
 import { MOCK_USERS } from '../mockData';
 import { Role } from '../types';
 import { Card, Button, Input } from '../components/Shared';
 import { Lock, User, ChevronLeft, LogIn, Sparkles } from 'lucide-react';
 
-export const Login: React.FC = () => {
+interface LoginProps {
+  initialView?: 'select' | 'admin' | 'client';
+}
+
+export const Login: React.FC<LoginProps> = ({ initialView = 'select' }) => {
   const { login, verifyAdminPassword, businessConfig } = useApp();
-  const [view, setView] = useState<'select' | 'admin' | 'client'>('select');
+  const navigate = useNavigate();
+  const [view, setView] = useState<'select' | 'admin' | 'client'>(initialView);
   const [password, setPassword] = useState('');
+
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
   
   // Client login form state
   const [clientName, setClientName] = useState('');
@@ -34,12 +44,12 @@ export const Login: React.FC = () => {
       setIsLoggingIn(true);
       try {
           const tokenOrFalse = await verifyAdminPassword(password);
-          if (tokenOrFalse) {
+          if (tokenOrFalse !== false) {
               if (adminUser) {
                   await login(adminUser.id, tokenOrFalse);
               }
           } else {
-              setError('Senha incorreta. Tente "123456" caso não tenha alterado.');
+              setError('Senha incorreta. Tente novamente.');
           }
       } catch (err) {
           setError('Ocorreu um erro ao validar sua senha administrativa.');
@@ -129,19 +139,6 @@ export const Login: React.FC = () => {
                   <p className="text-sm text-slate-400 mt-1">Ver serviços, profissionais e agendar um horário</p>
                 </div>
               </button>
-
-              <button 
-                onClick={() => setView('admin')}
-                className="w-full group relative flex items-center p-5 border border-slate-200 bg-slate-50 rounded-2xl hover:shadow-[0_4px_20px_rgba(0,0,0,0.04)] hover:bg-white hover:border-slate-300 transition-all text-left transform duration-300 hover:-translate-y-0.5 active:scale-98"
-              >
-                <div className="p-3 bg-slate-200 rounded-xl mr-4 group-hover:bg-slate-800 group-hover:text-white transition-all text-slate-600 duration-300">
-                  <Lock size={24} />
-                </div>
-                <div className="flex-1">
-                  <div className="font-semibold text-slate-800 text-base md:text-lg">Área Administrativa</div>
-                  <p className="text-sm text-slate-400 mt-1">Gerenciar equipe, horários, fotos e relatórios</p>
-                </div>
-              </button>
             </div>
           ) : view === 'client' ? (
             <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -207,7 +204,15 @@ export const Login: React.FC = () => {
             <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-300">
               <div className="text-left">
                 <button 
-                  onClick={() => { setView('select'); setError(''); setPassword(''); }} 
+                  onClick={() => {
+                    setView('select');
+                    setError('');
+                    setPassword('');
+                    if (window.location.pathname.replace(/\/+$/, '').endsWith('/admin') || window.location.search.includes('admin')) {
+                      window.history.replaceState(null, '', '/#/');
+                    }
+                    navigate('/');
+                  }} 
                   className="text-sm text-slate-400 hover:text-slate-800 flex items-center hover:underline transition-all mb-2"
                 >
                   <ChevronLeft size={16} className="mr-1"/> Voltar ao início
@@ -245,7 +250,7 @@ export const Login: React.FC = () => {
           )}
           
           <div className="text-xs text-slate-400 pt-6 border-t border-slate-100 flex items-center justify-between">
-            <span>{view === 'admin' ? 'Dica: Senha padrão 123456 (pode ser alterada)' : (businessConfig.companyName || 'Salão Eliane Melo')}</span>
+            <span>{view === 'admin' ? '' : (businessConfig.companyName || 'Salão Eliane Melo')}</span>
             <span className="font-serif italic font-semibold text-slate-500">Exclusividade & Beleza</span>
           </div>
         </div>

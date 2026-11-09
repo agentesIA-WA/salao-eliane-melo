@@ -14,11 +14,22 @@ export enum AppointmentStatus {
 export interface Service {
   id: string;
   name: string;
+  groupName?: string;
   description: string;
   durationMinutes: number;
   price: number;
   imageUrl?: string;
   observation?: string;
+}
+
+export interface Client {
+  userId: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  observations?: string;
+  totalAppointments: number;
+  lastVisit: string; // "YYYY-MM-DD HH:mm"
 }
 
 export interface Professional {
@@ -48,6 +59,7 @@ export interface Appointment {
   date: string; // ISO Date string YYYY-MM-DD
   time: string; // HH:mm
   status: AppointmentStatus;
+  observations?: string;
   rating?: number;
   reviewComment?: string;
 }

@@ -1,19 +1,20 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { Button } from '../../components/Shared';
-import { Calendar as CalendarIcon, Users, Scissors, TrendingUp, X, Briefcase, Settings, Sparkles } from 'lucide-react';
+import { Calendar as CalendarIcon, Users, Scissors, TrendingUp, X, Briefcase, Settings, Sparkles, UserRound } from 'lucide-react';
 
 // Extracted sub-view components
 import DashboardOverview from './components/DashboardOverview';
 import CalendarManager from './components/CalendarManager';
 import ServicesManager from './components/ServicesManager';
 import ProfessionalsManager from './components/ProfessionalsManager';
+import ClientsManager from './components/ClientsManager';
 import SettingsManager from './components/SettingsManager';
 import CompanyManager from './components/CompanyManager';
 
 export const AdminDashboard: React.FC = () => {
   const { logout, businessConfig } = useApp();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'services' | 'professionals' | 'settings' | 'company'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'services' | 'professionals' | 'clients' | 'settings' | 'company'>('dashboard');
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans">
@@ -39,6 +40,7 @@ export const AdminDashboard: React.FC = () => {
            <NavButton active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} icon={<CalendarIcon size={18}/>}>Gerenciar Agenda</NavButton>
            <NavButton active={activeTab === 'services'} onClick={() => setActiveTab('services')} icon={<Scissors size={18}/>}>Listagem de Serviços</NavButton>
            <NavButton active={activeTab === 'professionals'} onClick={() => setActiveTab('professionals')} icon={<Users size={18}/>}>Profissionais Parceiros</NavButton>
+           <NavButton active={activeTab === 'clients'} onClick={() => setActiveTab('clients')} icon={<UserRound size={18}/>}>Clientes</NavButton>
            <NavButton active={activeTab === 'company'} onClick={() => setActiveTab('company')} icon={<Briefcase size={18}/>}>Dados da Empresa</NavButton>
            <NavButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={18}/>}>Configurações & Acesso</NavButton>
         </nav>
@@ -80,18 +82,20 @@ export const AdminDashboard: React.FC = () => {
                {activeTab === 'calendar' && <CalendarManager />}
                {activeTab === 'services' && <ServicesManager />}
                {activeTab === 'professionals' && <ProfessionalsManager />}
+               {activeTab === 'clients' && <ClientsManager />}
                {activeTab === 'company' && <CompanyManager />}
                {activeTab === 'settings' && <SettingsManager />}
             </div>
          </main>
 
          {/* Mobile Floating Island Bottom Nav Bar */}
-         <div className="md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 max-w-lg w-[calc(100%-2rem)] bg-white/95 backdrop-blur-md shadow-[0_15px_30px_rgba(0,0,0,0.08)] border border-slate-100 rounded-3xl z-40">
-           <div className="flex justify-around items-center px-4 py-2">
+         <div className="md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 max-w-lg w-[calc(100%-2rem)] overflow-x-auto no-scrollbar bg-white/95 backdrop-blur-md shadow-[0_15px_30px_rgba(0,0,0,0.08)] border border-slate-100 rounded-3xl z-40">
+           <div className="flex justify-around items-center px-4 py-2 min-w-max">
              <MobileNavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<TrendingUp size={20}/>} label="Painel" />
              <MobileNavItem active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} icon={<CalendarIcon size={20}/>} label="Agenda" />
              <MobileNavItem active={activeTab === 'services'} onClick={() => setActiveTab('services')} icon={<Scissors size={20}/>} label="Serviços" />
              <MobileNavItem active={activeTab === 'professionals'} onClick={() => setActiveTab('professionals')} icon={<Users size={20}/>} label="Equipe" />
+             <MobileNavItem active={activeTab === 'clients'} onClick={() => setActiveTab('clients')} icon={<UserRound size={20}/>} label="Clientes" />
              <MobileNavItem active={activeTab === 'company'} onClick={() => setActiveTab('company')} icon={<Briefcase size={20}/>} label="Empresa" />
              <MobileNavItem active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={20}/>} label="Ajustes" />
            </div>

@@ -3,7 +3,7 @@ import { useApp } from '../../../contexts/AppContext';
 import { Appointment, AppointmentStatus, Service, Professional, BusinessConfig } from '../../../types';
 import { Button, Card, Badge, Input, Modal } from '../../../components/Shared';
 import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, Plus, Trash2, Check, X, Clock, Pencil, Briefcase, Settings, Loader2, Coffee, Phone, Mail, Sparkles, AlertCircle, Lock, Upload, ImageIcon, Link as LinkIcon, Info } from 'lucide-react';
-import { format, parseISO, isSameWeek } from 'date-fns';
+import { format, parseISO, isSameWeek, isSameMonth } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -11,13 +11,21 @@ const DashboardOverview: React.FC = () => {
     const { appointments, services, professionals } = useApp();
     const [selectedPopupType, setSelectedPopupType] = React.useState<'total' | 'confirmed' | 'completed' | 'revenue' | 'weekday' | null>(null);
     const [selectedWeekday, setSelectedWeekday] = React.useState<number | null>(null);
+    const [selectedMonthStr, setSelectedMonthStr] = React.useState<string>(format(new Date(), 'yyyy-MM'));
+    const selectedMonthDate = React.useMemo(() => parseISO(`${selectedMonthStr}-01`), [selectedMonthStr]);
     
-    const totalApts = appointments.length;
-    const confirmed = appointments.filter(a => a.status === AppointmentStatus.CONFIRMED).length;
-    const completed = appointments.filter(a => a.status === AppointmentStatus.COMPLETED).length;
+    const monthAppointments = React.useMemo(() => {
+        return appointments.filter(a => {
+            try { return isSameMonth(parseISO(a.date), selectedMonthDate); } 
+            catch { return false; }
+        });
+    }, [appointments, selectedMonthDate]);
+
+    const totalApts = monthAppointments.length;
+    const confirmed = monthAppointments.filter(a => a.status === AppointmentStatus.CONFIRMED).length;
+    const completed = monthAppointments.filter(a => a.status === AppointmentStatus.COMPLETED).length;
     
-    // Revenue calculations based on actual service prices of completed appointments
-    const totalRevenue = appointments
+    const totalRevenue = monthAppointments
         .filter(a => a.status === AppointmentStatus.COMPLETED)
         .reduce((sum, apt) => {
             const ids = apt.serviceId ? apt.serviceId.split(',').filter(Boolean) : [];
@@ -31,19 +39,15 @@ const DashboardOverview: React.FC = () => {
 
     const chartData = React.useMemo(() => {
         const counts = [0, 0, 0, 0, 0, 0, 0]; // Dom-Sáb
-        const now = new Date();
-        appointments.forEach(apt => {
+        monthAppointments.forEach(apt => {
             if (apt.status === AppointmentStatus.CANCELLED) return;
             try {
-                const aptDate = parseISO(apt.date);
-                if (isSameWeek(aptDate, now, { weekStartsOn: 0 })) {
-                    const dayOfWeek = aptDate.getDay();
-                    counts[dayOfWeek]++;
-                }
+                const dayOfWeek = parseISO(apt.date).getDay();
+                counts[dayOfWeek]++;
             } catch (e) { /* ignore invalid dates */ }
         });
         return weekDayNames.map((name, idx) => ({ name, apts: counts[idx], dayIndex: idx }));
-    }, [appointments]);
+    }, [monthAppointments]);
 
     const handleBarClick = (data: any) => {
         if (data && data.activePayload && data.activePayload.length > 0) {
@@ -57,15 +61,13 @@ const DashboardOverview: React.FC = () => {
         if (!selectedPopupType) return [];
         let filtered: Appointment[] = [];
         if (selectedPopupType === 'total') {
-            filtered = [...appointments];
+            filtered = [...monthAppointments];
         } else if (selectedPopupType === 'confirmed') {
-            filtered = appointments.filter(a => a.status === AppointmentStatus.CONFIRMED);
-        } else if (selectedPopupType === 'completed') {
-            filtered = appointments.filter(a => a.status === AppointmentStatus.COMPLETED);
-        } else if (selectedPopupType === 'revenue') {
-            filtered = appointments.filter(a => a.status === AppointmentStatus.COMPLETED);
+            filtered = monthAppointments.filter(a => a.status === AppointmentStatus.CONFIRMED);
+        } else if (selectedPopupType === 'completed' || selectedPopupType === 'revenue') {
+            filtered = monthAppointments.filter(a => a.status === AppointmentStatus.COMPLETED);
         } else if (selectedPopupType === 'weekday' && selectedWeekday !== null) {
-            filtered = appointments.filter(a => {
+            filtered = monthAppointments.filter(a => {
                 if (a.status === AppointmentStatus.CANCELLED) return false;
                 try { return parseISO(a.date).getDay() === selectedWeekday; } catch { return false; }
             });
@@ -76,7 +78,7 @@ const DashboardOverview: React.FC = () => {
             const dateTimeB = `${b.date}T${b.time || '00:00'}`;
             return dateTimeA.localeCompare(dateTimeB);
         });
-    }, [selectedPopupType, selectedWeekday, appointments]);
+    }, [selectedPopupType, selectedWeekday, monthAppointments]);
 
     const { groupedAppointments, sortedDates } = React.useMemo(() => {
         const groups: { [key: string]: Appointment[] } = {};
@@ -104,16 +106,27 @@ const DashboardOverview: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div>
-              <h2 className="text-3xl font-serif font-bold text-slate-900 select-none tracking-wide">Visão Geral</h2>
-              <p className="text-slate-400 text-sm mt-1">Monitore agendamentos, produtividade da equipe e faturamento real de atendimentos concluídos (Clique nos cards para detalhar).</p>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-3xl font-serif font-bold text-slate-900 select-none tracking-wide">Visão Geral</h2>
+                <p className="text-slate-400 text-sm mt-1">Monitore agendamentos, produtividade e faturamento. (Clique nos cards para detalhar)</p>
+              </div>
+              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-sm shrink-0">
+                <CalendarIcon size={16} className="text-slate-500" />
+                <input 
+                  type="month" 
+                  value={selectedMonthStr} 
+                  onChange={e => setSelectedMonthStr(e.target.value)}
+                  className="bg-transparent border-none text-sm font-bold text-slate-700 outline-none cursor-pointer"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                 <StatCard 
                     title="Agendamentos Totais" 
                     value={totalApts} 
-                    subtitle="No banco de dados" 
+                    subtitle="No mês selecionado" 
                     icon={<CalendarIcon size={20} className="text-blue-500" />} 
                     gradientClass="from-blue-500/5 to-blue-500/10 border-blue-100" 
                     onClick={() => setSelectedPopupType('total')}
@@ -121,7 +134,7 @@ const DashboardOverview: React.FC = () => {
                 <StatCard 
                     title="Horários Confirmados" 
                     value={confirmed} 
-                    subtitle="Aguardando atendimento" 
+                    subtitle="No mês selecionado" 
                     icon={<Check size={20} className="text-emerald-500" />} 
                     gradientClass="from-emerald-500/5 to-emerald-500/10 border-emerald-100" 
                     onClick={() => setSelectedPopupType('confirmed')}
@@ -129,7 +142,7 @@ const DashboardOverview: React.FC = () => {
                 <StatCard 
                     title="Serviços Realizados" 
                     value={completed} 
-                    subtitle="Finalizados com sucesso" 
+                    subtitle="No mês selecionado" 
                     icon={<Briefcase size={20} className="text-rose-500" />} 
                     gradientClass="from-rose-500/5 to-rose-500/10 border-rose-100" 
                     onClick={() => setSelectedPopupType('completed')}
@@ -137,7 +150,7 @@ const DashboardOverview: React.FC = () => {
                 <StatCard 
                     title="Faturamento Real" 
                     value={`R$ ${Number(totalRevenue).toFixed(2)}`} 
-                    subtitle="Baseado nos serviços concluídos" 
+                    subtitle="No mês selecionado" 
                     icon={<TrendingUp size={20} className="text-purple-500" />} 
                     gradientClass="from-purple-500/5 to-purple-500/10 border-purple-100" 
                     onClick={() => setSelectedPopupType('revenue')}
@@ -150,7 +163,7 @@ const DashboardOverview: React.FC = () => {
                     <h3 className="text-lg font-serif font-bold text-slate-900">Agendamentos por Dia da Semana</h3>
                     <p className="text-xs text-slate-400">Dados reais • Clique em uma barra para ver os agendamentos</p>
                   </div>
-                  <Badge color="pink">Semana Atual</Badge>
+                  <Badge color="pink">Mês Selecionado</Badge>
                 </div>
                 <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">

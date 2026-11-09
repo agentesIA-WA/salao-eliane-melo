@@ -117,10 +117,10 @@ const ProfessionalsManager: React.FC = () => {
                 {professionals.map(pro => (
                     <Card key={pro.id} className="group relative hover:shadow-lg hover:border-primary-100 transition-all duration-300 p-6 flex flex-col justify-between">
                         
-                        {/* Action buttons hover */}
-                        <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5 z-10">
-                             <button onClick={() => handleEdit(pro)} className="p-2 bg-white rounded-xl shadow-md border border-slate-100 text-blue-500 hover:bg-blue-50 cursor-pointer transition-all"><Pencil size={13}/></button>
-                             <button onClick={() => deleteProfessional(pro.id)} className="p-2 bg-white rounded-xl shadow-md border border-slate-100 text-red-500 hover:bg-red-50 cursor-pointer transition-all"><Trash2 size={13}/></button>
+                        {/* Action buttons fixed */}
+                        <div className="absolute top-3 right-3 flex gap-2 z-10">
+                             <button onClick={() => handleEdit(pro)} className="p-2 bg-white rounded-xl shadow border border-slate-200 text-blue-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-all" title="Editar Profissional"><Pencil size={16}/></button>
+                             <button onClick={() => deleteProfessional(pro.id)} className="p-2 bg-white rounded-xl shadow border border-slate-200 text-red-600 hover:bg-red-50 hover:border-red-200 cursor-pointer transition-all" title="Excluir Profissional"><Trash2 size={16}/></button>
                         </div>
 
                         <div className="flex flex-col items-center text-center">

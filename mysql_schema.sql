@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   `time` varchar(10) NOT NULL,
   `status` varchar(50) NOT NULL,
   `rating` int(11),
+  `observations` text,
   `reviewComment` text,
   `created_at` timestamp DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
@@ -66,6 +67,19 @@ CREATE TABLE IF NOT EXISTS `admin_auth` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `password_hash` varchar(255) NOT NULL,
   PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Tabela de Clientes
+CREATE TABLE IF NOT EXISTS `clients` (
+  `userId` varchar(50) NOT NULL,
+  `name` varchar(255) NOT NULL,
+  `phone` varchar(30) DEFAULT '',
+  `email` varchar(255) DEFAULT '',
+  `observations` text,
+  `totalAppointments` int(11) NOT NULL DEFAULT 0,
+  `lastVisit` varchar(50) DEFAULT NULL,
+  `created_at` timestamp DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`userId`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Dados iniciais

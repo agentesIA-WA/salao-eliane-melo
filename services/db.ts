@@ -3,12 +3,14 @@ import {
   Service, 
   Professional, 
   User, 
+  Client,
   BusinessConfig, 
   AppointmentStatus, 
   Role 
 } from '../types';
 import { 
-  MOCK_USERS 
+  MOCK_USERS,
+  MOCK_BUSINESS_CONFIG
 } from '../mockData';
 
 const API_URL = './backend/api.php';
@@ -22,10 +24,32 @@ export const setAdminToken = (token: string | null) => {
 
 export const getAdminToken = () => adminToken;
 
+const resolveCurrentTenant = (): string | null => {
+    try {
+        const searchParams = new URLSearchParams(window.location.search);
+        const fromSearch = searchParams.get('tenant') || searchParams.get('empresa');
+        if (fromSearch) return fromSearch.trim();
+        const hash = window.location.hash || '';
+        const qIdx = hash.indexOf('?');
+        if (qIdx !== -1) {
+            const hashParams = new URLSearchParams(hash.slice(qIdx + 1));
+            const fromHash = hashParams.get('tenant') || hashParams.get('empresa');
+            if (fromHash) return fromHash.trim();
+        }
+        const stored = localStorage.getItem('tenantSlug');
+        if (stored) return stored.trim();
+    } catch (e) {}
+    return null;
+};
+
 const apiFetch = async (action: string, options: RequestInit = {}) => {
     try {
         const url = new URL(API_URL, window.location.href);
         url.searchParams.set('action', action);
+        const tenant = resolveCurrentTenant();
+        if (tenant) {
+            url.searchParams.set('tenant', tenant);
+        }
         
         if (options.method === 'PUT' || options.method === 'DELETE') {
             const id = (options as any).id;
@@ -37,6 +61,10 @@ const apiFetch = async (action: string, options: RequestInit = {}) => {
             'Content-Type': 'application/json',
             ...(options.headers as Record<string, string> || {}),
         };
+
+        if (tenant) {
+            headers['X-Tenant'] = tenant;
+        }
 
         if (adminToken) {
             headers['Authorization'] = `Bearer ${adminToken}`;
@@ -131,6 +159,23 @@ export const dbUsers = {
     }
 };
 
+// --- Clientes ---
+export const dbClients = {
+  getAll: async (): Promise<Client[]> => {
+    return apiFetch('clients');
+  },
+  create: async (data: { name: string; phone?: string; email?: string; observations?: string }): Promise<Client> => {
+    const newItem = { id: "cli-" + Date.now(), ...data };
+    return apiFetch('clients', { method: 'POST', body: JSON.stringify(newItem) } as any);
+  },
+  update: async (id: string, data: { name: string; phone?: string; email?: string; observations?: string }): Promise<any> => {
+    return apiFetch('clients', { method: 'PUT', id, body: JSON.stringify(data) } as any);
+  },
+  delete: async (id: string): Promise<any> => {
+    return apiFetch('clients', { method: 'DELETE', id } as any);
+  }
+};
+
 // --- Senha Administrativa ---
 export const dbAdminPassword = {
     get: async (): Promise<string> => {
@@ -157,9 +202,35 @@ export const dbAdminPassword = {
 };
 
 // --- Configuração ---
+function normalizeBusinessConfig(raw: unknown): BusinessConfig {
+    const base = MOCK_BUSINESS_CONFIG;
+    const cfg: Record<string, any> =
+        raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...(raw as Record<string, any>) } : {};
+
+    const incomingDays: Record<string, any> =
+        cfg.days && typeof cfg.days === 'object' ? cfg.days : {};
+
+    const days: BusinessConfig['days'] = {} as BusinessConfig['days'];
+    for (let i = 0; i <= 6; i++) {
+        const fallback = (base.days as Record<number, any>)[i];
+        const d = incomingDays[i] ?? incomingDays[String(i)];
+        days[i] = {
+            isOpen: typeof d?.isOpen === 'boolean' ? d.isOpen : fallback.isOpen,
+            start: d?.start ?? fallback.start,
+            end: d?.end ?? fallback.end,
+            hasLunch: typeof d?.hasLunch === 'boolean' ? d.hasLunch : fallback.hasLunch,
+            lunchStart: d?.lunchStart ?? fallback.lunchStart,
+            lunchEnd: d?.lunchEnd ?? fallback.lunchEnd,
+        };
+    }
+
+    return { ...base, ...cfg, days } as BusinessConfig;
+}
+
 export const dbConfig = {
     get: async (): Promise<BusinessConfig> => {
-        return apiFetch('config');
+        const raw = await apiFetch('config');
+        return normalizeBusinessConfig(raw);
     },
     save: async (config: BusinessConfig): Promise<BusinessConfig> => {
         return apiFetch('config', { method: 'POST', body: JSON.stringify(config) });
