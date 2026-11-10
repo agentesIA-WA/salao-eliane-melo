@@ -3,10 +3,11 @@ import { useApp } from '../../../contexts/AppContext';
 import { Appointment, AppointmentStatus, Service, Professional, BusinessConfig } from '../../../types';
 import { Button, Card, Badge, Input, Modal } from '../../../components/Shared';
 import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, Plus, Trash2, Check, X, Clock, Pencil, Briefcase, Settings, Loader2, Coffee, Phone, Mail, Sparkles, AlertCircle, Lock, Upload, ImageIcon, Link as LinkIcon, Info } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, differenceInCalendarDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { generateWhatsAppMessage } from '../../../services/geminiService';
 import { AdminCalendarView } from '../../../components/AdminCalendarView';
+import { findBlockedSlotConflict, formatServicePrice, formatServicesTotalPrice, isVariablePriceService } from '../../../services/serviceGroups';
 
 const CalendarManager: React.FC = () => {
     const { appointments, updateAppointmentStatus, updateAppointment, services, professionals, addAppointment, businessConfig, updateBusinessConfig } = useApp();
@@ -16,10 +17,12 @@ const CalendarManager: React.FC = () => {
     const [isBlockedModalOpen, setIsBlockedModalOpen] = useState(false);
     const [blockedForm, setBlockedForm] = useState({
         date: format(new Date(), 'yyyy-MM-dd'),
+        endDate: format(new Date(), 'yyyy-MM-dd'),
         period: 'INTEIRO', // 'MANHA', 'TARDE', 'INTEIRO', 'CUSTOM'
         time: '00:00',
         professionalId: 'ALL',
-        durationMinutes: 1440
+        durationMinutes: 1440,
+        reason: ''
     });
 
     const handlePeriodChange = (period: string) => {
@@ -42,16 +45,27 @@ const CalendarManager: React.FC = () => {
 
     const handleAddBlock = async () => {
         if (!blockedForm.date || !blockedForm.time) return;
+        const startDate = blockedForm.date;
+        const endDate = blockedForm.endDate && blockedForm.endDate >= startDate ? blockedForm.endDate : startDate;
         const newBlock = {
             id: 'block-' + Date.now(),
-            date: blockedForm.date,
+            date: startDate,
+            endDate,
             time: blockedForm.time,
             professionalId: blockedForm.professionalId,
-            durationMinutes: Number(blockedForm.durationMinutes)
+            durationMinutes: Number(blockedForm.durationMinutes),
+            reason: blockedForm.reason.trim() || undefined
         };
         const updatedBlocks = [...(businessConfig.blockedSlots || []), newBlock];
         await updateBusinessConfig({ ...businessConfig, blockedSlots: updatedBlocks });
-        setBlockedForm({ ...blockedForm, period: 'INTEIRO', time: '00:00', durationMinutes: 1440 });
+        setBlockedForm({
+            ...blockedForm,
+            endDate: blockedForm.date,
+            period: 'INTEIRO',
+            time: '00:00',
+            durationMinutes: 1440,
+            reason: ''
+        });
     };
 
     const handleDeleteBlock = async (idToDel: string) => {
@@ -82,11 +96,21 @@ const CalendarManager: React.FC = () => {
         date: '',
         time: '',
         status: '' as string,
-        observations: ''
+        observations: '',
+        totalPrice: ''
     });
 
     const handleOpenEditModal = (apt: Appointment) => {
         setEditApt(apt);
+        const ids = apt.serviceId ? apt.serviceId.split(',').filter(Boolean) : [];
+        const aptServices = services.filter(s => ids.includes(s.id));
+        const hasVariable = aptServices.some(isVariablePriceService);
+        const defaultCalculatedTotal = aptServices.reduce((sum, s) => sum + Number(s.price || 0), 0);
+        const initialTotalPrice =
+            apt.totalPrice !== undefined && apt.totalPrice !== null
+                ? String(apt.totalPrice)
+                : (!hasVariable && defaultCalculatedTotal > 0 ? String(defaultCalculatedTotal) : '');
+
         setEditForm({
             userName: apt.userName || '',
             clientEmail: apt.clientEmail || '',
@@ -96,29 +120,24 @@ const CalendarManager: React.FC = () => {
             date: apt.date || '',
             time: apt.time || '',
             status: apt.status || '',
-            observations: apt.observations || ''
+            observations: apt.observations || '',
+            totalPrice: initialTotalPrice
         });
     };
 
-    const handleUpdateApt = async () => {
-        if (!editApt) return;
-        if (editForm.userName && editForm.serviceId && editForm.professionalId && editForm.date && editForm.time) {
-            await updateAppointment(editApt.id, {
-                userName: editForm.userName,
-                clientEmail: editForm.clientEmail,
-                clientPhone: editForm.clientPhone,
-                serviceId: editForm.serviceId,
-                professionalId: editForm.professionalId,
-                date: editForm.date,
-                time: editForm.time,
-                status: editForm.status as AppointmentStatus,
-                observations: editForm.observations
-            });
-            setEditApt(null);
-        }
-    };
-
     const newSelectedServiceIds = newAptForm.serviceId ? newAptForm.serviceId.split(',').filter(Boolean) : [];
+    const newAptDuration = newSelectedServiceIds.length > 0
+        ? services.filter(s => newSelectedServiceIds.includes(s.id)).reduce((sum, s) => sum + Number(s.durationMinutes || 0), 0)
+        : 60;
+    const newAptConflict = findBlockedSlotConflict(
+        newAptForm.date,
+        newAptForm.time,
+        newAptDuration,
+        newAptForm.professionalId,
+        businessConfig.blockedSlots || [],
+        professionals
+    );
+
     const exactNewPros = newSelectedServiceIds.length > 0
         ? professionals.filter(p => newSelectedServiceIds.every(sid => p.specialties.includes(sid)))
         : [];
@@ -140,6 +159,41 @@ const CalendarManager: React.FC = () => {
     };
 
     const editSelectedServiceIds = editForm.serviceId ? editForm.serviceId.split(',').filter(Boolean) : [];
+    const editAptDuration = editSelectedServiceIds.length > 0
+        ? services.filter(s => editSelectedServiceIds.includes(s.id)).reduce((sum, s) => sum + Number(s.durationMinutes || 0), 0)
+        : 60;
+    const editAptConflict = editForm.status !== AppointmentStatus.CANCELLED
+        ? findBlockedSlotConflict(
+            editForm.date,
+            editForm.time,
+            editAptDuration,
+            editForm.professionalId,
+            businessConfig.blockedSlots || [],
+            professionals
+        )
+        : null;
+
+    const handleUpdateApt = async () => {
+        if (!editApt || editAptConflict) return;
+        if (editForm.userName && editForm.serviceId && editForm.professionalId && editForm.date && editForm.time) {
+            const parsedTotalPrice = editForm.totalPrice !== '' && !isNaN(Number(editForm.totalPrice))
+                ? Number(editForm.totalPrice)
+                : null;
+            await updateAppointment(editApt.id, {
+                userName: editForm.userName,
+                clientEmail: editForm.clientEmail,
+                clientPhone: editForm.clientPhone,
+                serviceId: editForm.serviceId,
+                professionalId: editForm.professionalId,
+                date: editForm.date,
+                time: editForm.time,
+                status: editForm.status as AppointmentStatus,
+                observations: editForm.observations,
+                totalPrice: parsedTotalPrice
+            });
+            setEditApt(null);
+        }
+    };
     const exactEditPros = editSelectedServiceIds.length > 0
         ? professionals.filter(p => editSelectedServiceIds.every(sid => p.specialties.includes(sid)) || p.id === editForm.professionalId)
         : [];
@@ -189,6 +243,7 @@ const CalendarManager: React.FC = () => {
     };
 
     const handleSubmitNewApt = () => {
+        if (newAptConflict) return;
         if (newAptForm.userName && newAptForm.serviceId && newAptForm.professionalId && newAptForm.date && newAptForm.time) {
             const finalEmail = newAptForm.clientEmail.trim() ? newAptForm.clientEmail.trim() : `guest_${Date.now()}@salao.local`;
 
@@ -216,6 +271,7 @@ const CalendarManager: React.FC = () => {
     };
 
     const sortedApts = [...appointments].sort((a, b) => b.id.localeCompare(a.id));
+    const activeBlocksCount = (businessConfig.blockedSlots || []).length;
 
     return (
         <div className="space-y-6">
@@ -230,10 +286,16 @@ const CalendarManager: React.FC = () => {
                         <button onClick={() => setViewMode('calendar')} className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${viewMode === 'calendar' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Calendário</button>
                     </div>
                     <Button 
+                    variant="alert"
                     onClick={() => setIsBlockedModalOpen(true)} 
-                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 px-4 self-start sm:self-auto rounded-xl flex items-center gap-1.5 flex-1 sm:flex-none justify-center"
+                    className="font-medium py-2.5 px-4 self-start sm:self-auto rounded-xl flex items-center gap-1.5 flex-1 sm:flex-none justify-center"
                     >
                     <Lock size={18} /> Bloqueios
+                    {activeBlocksCount > 0 && (
+                        <span className="ml-0.5 px-1.5 py-0.5 text-[10px] font-extrabold bg-white/25 text-white rounded-full leading-none">
+                            {activeBlocksCount}
+                        </span>
+                    )}
                     </Button>
                     <Button 
                     onClick={() => setIsNewAptModalOpen(true)} 
@@ -407,13 +469,38 @@ const CalendarManager: React.FC = () => {
                 <div className="space-y-5 mt-2">
                     <div className="bg-orange-50 border border-orange-100 p-4 rounded-xl">
                         <h4 className="text-sm font-bold text-orange-800 flex items-center gap-1.5"><Lock size={16}/> Novo Bloqueio</h4>
-                        <p className="text-xs text-orange-600 mt-1 mb-3">Feche um horário na agenda para impedir que clientes façam reservas. O bloqueio não afeta agendamentos já confirmados.</p>
+                        <p className="text-xs text-orange-600 mt-1 mb-3">Feche uma data ou período na agenda para impedir que clientes e administradores façam reservas nos horários bloqueados.</p>
                         
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
                             <div>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Data</label>
-                                <input type="date" value={blockedForm.date} onChange={e => setBlockedForm({...blockedForm, date: e.target.value})} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500" />
+                                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Data Inicial</label>
+                                <input
+                                    type="date"
+                                    value={blockedForm.date}
+                                    onChange={e => {
+                                        const newDate = e.target.value;
+                                        setBlockedForm(prev => ({
+                                            ...prev,
+                                            date: newDate,
+                                            endDate: prev.endDate && prev.endDate >= newDate ? prev.endDate : newDate
+                                        }));
+                                    }}
+                                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white"
+                                />
                             </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Data Final</label>
+                                <input
+                                    type="date"
+                                    min={blockedForm.date}
+                                    value={blockedForm.endDate || blockedForm.date}
+                                    onChange={e => setBlockedForm({ ...blockedForm, endDate: e.target.value })}
+                                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
                             <div>
                                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Período de Bloqueio</label>
                                 <select value={blockedForm.period} onChange={e => handlePeriodChange(e.target.value)} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white">
@@ -423,13 +510,20 @@ const CalendarManager: React.FC = () => {
                                     <option value="CUSTOM">Horário Personalizado</option>
                                 </select>
                             </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Profissional</label>
+                                <select value={blockedForm.professionalId} onChange={e => setBlockedForm({...blockedForm, professionalId: e.target.value})} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white">
+                                    <option value="ALL">Todo o Salão (Todos profissionais)</option>
+                                    {professionals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                </select>
+                            </div>
                         </div>
 
                         {blockedForm.period === 'CUSTOM' && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3 animate-in fade-in slide-in-from-top-2">
                                 <div>
                                     <label className="block text-xs font-semibold text-slate-600 mb-1.5">Horário de Início</label>
-                                    <input type="time" value={blockedForm.time} onChange={e => setBlockedForm({...blockedForm, time: e.target.value})} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500" />
+                                    <input type="time" value={blockedForm.time} onChange={e => setBlockedForm({...blockedForm, time: e.target.value})} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white" />
                                 </div>
                                 <div>
                                     <label className="block text-xs font-semibold text-slate-600 mb-1.5">Duração (minutos)</label>
@@ -446,14 +540,15 @@ const CalendarManager: React.FC = () => {
                             </div>
                         )}
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className={blockedForm.period !== 'CUSTOM' ? 'md:col-span-2' : ''}>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Profissional</label>
-                                <select value={blockedForm.professionalId} onChange={e => setBlockedForm({...blockedForm, professionalId: e.target.value})} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white">
-                                    <option value="ALL">Todo o Salão (Todos profissionais)</option>
-                                    {professionals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                                </select>
-                            </div>
+                        <div className="mb-3">
+                            <label className="block text-xs font-semibold text-slate-600 mb-1.5">Justificativa do Bloqueio (opcional)</label>
+                            <input
+                                type="text"
+                                value={blockedForm.reason}
+                                onChange={e => setBlockedForm({ ...blockedForm, reason: e.target.value })}
+                                placeholder="Ex: Feriado, reforma no salão, curso de especialização, férias..."
+                                className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-primary-500 bg-white"
+                            />
                         </div>
                         
                         <div className="flex justify-end mt-4">
@@ -467,17 +562,41 @@ const CalendarManager: React.FC = () => {
                             <p className="text-xs text-slate-400 italic text-center py-4">Nenhum bloqueio cadastrado no momento.</p>
                         ) : (
                             <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                                {(businessConfig.blockedSlots || []).map(block => (
-                                    <div key={block.id} className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                        <div>
-                                            <div className="text-sm font-bold text-slate-800">{format(parseISO(block.date), 'dd/MM/yyyy')} às {block.time}</div>
-                                            <div className="text-xs text-slate-500 mt-0.5">Duração: {block.durationMinutes} min • Profissional: {block.professionalId === 'ALL' ? 'Todos' : professionals.find(p => p.id === block.professionalId)?.name || 'Desconhecido'}</div>
+                                {(businessConfig.blockedSlots || []).map(block => {
+                                    const startDateStr = block.date;
+                                    const endDateStr = block.endDate && block.endDate >= startDateStr ? block.endDate : startDateStr;
+                                    const isRange = endDateStr !== startDateStr;
+                                    const daysCount = Math.max(1, differenceInCalendarDays(parseISO(endDateStr), parseISO(startDateStr)) + 1);
+                                    const isFullDay = Number(block.durationMinutes) >= 1440;
+
+                                    return (
+                                        <div key={block.id} className="flex items-start justify-between bg-slate-50 p-3 rounded-lg border border-slate-100 gap-3">
+                                            <div className="space-y-1">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-sm font-bold text-slate-800">
+                                                        {isRange
+                                                            ? `${format(parseISO(startDateStr), 'dd/MM/yyyy')} até ${format(parseISO(endDateStr), 'dd/MM/yyyy')}`
+                                                            : format(parseISO(startDateStr), 'dd/MM/yyyy')}
+                                                    </span>
+                                                    <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200">
+                                                        {daysCount} {daysCount === 1 ? 'dia' : 'dias'}
+                                                    </span>
+                                                </div>
+                                                <div className="text-xs text-slate-500">
+                                                    {isFullDay ? 'Dia Inteiro' : `Às ${block.time} • Duração: ${block.durationMinutes} min`} • Profissional: {block.professionalId === 'ALL' ? 'Todos' : professionals.find(p => p.id === block.professionalId)?.name || 'Desconhecido'}
+                                                </div>
+                                                {block.reason && (
+                                                    <div className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200/70 rounded-md px-2.5 py-1 mt-1 inline-block">
+                                                        Justificativa: {block.reason}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <button onClick={() => handleDeleteBlock(block.id)} className="text-slate-400 hover:text-red-500 p-2 transition-colors shrink-0">
+                                                <Trash2 size={16} />
+                                            </button>
                                         </div>
-                                        <button onClick={() => handleDeleteBlock(block.id)} className="text-slate-400 hover:text-red-500 p-2 transition-colors">
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
@@ -527,14 +646,14 @@ const CalendarManager: React.FC = () => {
                                         <div className="flex-1 min-w-0">
                                             <span className="text-sm font-medium text-slate-800 truncate block">{s.name}</span>
                                         </div>
-                                        <span className="text-xs font-bold text-primary-600 shrink-0">R$ {Number(s.price).toFixed(2)}</span>
+                                        <span className="text-xs font-bold text-primary-600 shrink-0">{formatServicePrice(s)}</span>
                                     </div>
                                 );
                             })}
                         </div>
                         {newSelectedServiceIds.length > 0 && (
                             <p className="text-[11px] text-slate-500 mt-1.5 font-medium">
-                                {newSelectedServiceIds.length} serviço(s) selecionado(s) • Total: R$ {services.filter(s => newSelectedServiceIds.includes(s.id)).reduce((sum, s) => sum + Number(s.price), 0).toFixed(2)}
+                                {newSelectedServiceIds.length} serviço(s) selecionado(s) • Total: {formatServicesTotalPrice(services.filter(s => newSelectedServiceIds.includes(s.id)))}
                             </p>
                         )}
                     </div>
@@ -567,7 +686,24 @@ const CalendarManager: React.FC = () => {
                         />
                     </div>
 
-                    <Button fullWidth onClick={handleSubmitNewApt} className="mt-4">Confirmar Agendamento Interno</Button>
+                    {newAptConflict && (
+                        <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-800">
+                            <Lock size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                            <div>
+                                <p className="font-bold">Data/Horário Bloqueado</p>
+                                <p className="mt-0.5">{newAptConflict.message}</p>
+                            </div>
+                        </div>
+                    )}
+
+                    <Button
+                        fullWidth
+                        onClick={handleSubmitNewApt}
+                        disabled={!!newAptConflict || !newAptForm.userName || !newAptForm.serviceId || !newAptForm.professionalId || !newAptForm.date || !newAptForm.time}
+                        className="mt-4"
+                    >
+                        Confirmar Agendamento Interno
+                    </Button>
                 </div>
              </Modal>
 
@@ -614,14 +750,14 @@ const CalendarManager: React.FC = () => {
                                              <div className="flex-1 min-w-0">
                                                  <span className="text-sm font-medium text-slate-800 truncate block">{s.name}</span>
                                              </div>
-                                             <span className="text-xs font-bold text-primary-600 shrink-0">R$ {Number(s.price).toFixed(2)}</span>
+                                             <span className="text-xs font-bold text-primary-600 shrink-0">{formatServicePrice(s)}</span>
                                          </div>
                                      );
                                  })}
                              </div>
                              {editSelectedServiceIds.length > 0 && (
                                  <p className="text-[11px] text-slate-500 mt-1.5 font-medium">
-                                     {editSelectedServiceIds.length} serviço(s) selecionado(s) • Total: R$ {services.filter(s => editSelectedServiceIds.includes(s.id)).reduce((sum, s) => sum + Number(s.price), 0).toFixed(2)}
+                                     {editSelectedServiceIds.length} serviço(s) selecionado(s) • Total estimado: {formatServicesTotalPrice(services.filter(s => editSelectedServiceIds.includes(s.id)))}
                                  </p>
                              )}
                          </div>
@@ -679,6 +815,27 @@ const CalendarManager: React.FC = () => {
                          </div>
 
                          <div className="w-full">
+                             <Input
+                                 type="number"
+                                 step="0.01"
+                                 min="0"
+                                 label="Valor Total do Serviço Prestado (R$)"
+                                 value={editForm.totalPrice}
+                                 onChange={e => setEditForm({ ...editForm, totalPrice: e.target.value })}
+                                 placeholder={
+                                     services.filter(s => editSelectedServiceIds.includes(s.id)).some(isVariablePriceService)
+                                         ? "Informe o valor final cobrado pelo atendimento..."
+                                         : "Opcional (deixe em branco para usar a soma dos serviços)"
+                                 }
+                             />
+                             {services.filter(s => editSelectedServiceIds.includes(s.id)).some(isVariablePriceService) && (
+                                 <p className="text-[11px] text-amber-700 font-medium mt-1">
+                                     Este agendamento inclui serviço(s) com <strong>valor variável</strong>. Preencha o valor acordado/cobrado para contabilizar no Faturamento Real ao concluir.
+                                 </p>
+                             )}
+                         </div>
+
+                         <div className="w-full">
                              <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Observações do Agendamento</label>
                              <textarea
                                  value={editForm.observations}
@@ -690,7 +847,24 @@ const CalendarManager: React.FC = () => {
                              <p className="text-[11px] text-slate-400 mt-1">Anotações internas — visíveis apenas para a administração do salão.</p>
                          </div>
 
-                         <Button fullWidth onClick={handleUpdateApt} className="mt-4">Salvar Alterações / Reagendar</Button>
+                         {editAptConflict && (
+                             <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-800">
+                                 <Lock size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                                 <div>
+                                     <p className="font-bold">Data/Horário Bloqueado</p>
+                                     <p className="mt-0.5">{editAptConflict.message}</p>
+                                 </div>
+                             </div>
+                         )}
+
+                         <Button
+                             fullWidth
+                             onClick={handleUpdateApt}
+                             disabled={!!editAptConflict || !editForm.userName || !editForm.serviceId || !editForm.professionalId || !editForm.date || !editForm.time}
+                             className="mt-4"
+                         >
+                             Salvar Alterações / Reagendar
+                         </Button>
                      </div>
                  )}
               </Modal>

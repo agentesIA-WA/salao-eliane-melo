@@ -6,6 +6,7 @@ import { Calendar, Clock, User as UserIcon, Star, Scissors, LogOut, Plus, Chevro
 import { format, startOfToday, endOfMonth, eachDayOfInterval, isSameDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { getGoogleDriveThumbnail } from '../../services/driveUtils';
+import { groupServicesByGroup, formatServicePrice, formatServicesTotalPrice, isVariablePriceService } from '../../services/serviceGroups';
 
 // Extracted sub-view components
 import BookingWizard from './components/BookingWizard';
@@ -232,51 +233,75 @@ Se precisar, estamos sempre à disposição para novos agendamentos! 🥰`;
                   </div>
                 </div>
 
-                {/* Popular Services Grid (Responsive layout) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-5">
-                  {services.map(service => (
-                    <div 
-                      key={service.id} 
-                      className="group flex flex-col md:flex-row bg-white rounded-2xl md:rounded-3xl shadow-[0_4px_20px_rgba(0,0,0,0.01)] border border-luxury-100 hover:border-primary-300 overflow-hidden cursor-pointer hover:shadow-md transition-all duration-300 transform hover:-translate-y-0.5"
-                      onClick={() => {
-                        setSelectedServices([service]);
-                        setView('book');
-                      }}
-                    >
-                      <div className="relative w-full md:w-32 h-40 md:h-full min-h-[120px] bg-slate-100 overflow-hidden">
-                        <img 
-                          src={getGoogleDriveThumbnail(service.imageUrl)} 
-                          alt={service.name} 
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          referrerPolicy="no-referrer" 
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/40 via-transparent to-transparent md:hidden"></div>
-                      </div>
-                      
-                      <div className="p-5 flex-1 flex flex-col justify-between">
-                        <div>
-                          <div className="flex justify-between items-start gap-2">
-                            <h4 className="font-semibold text-slate-800 group-hover:text-primary-600 transition-colors text-base md:text-lg line-clamp-1">{service.name}</h4>
-                          </div>
-                          <p className="text-slate-400 text-xs line-clamp-2 mt-1 leading-relaxed">{service.description}</p>
-                          {service.observation && (
-                            <div className="flex items-start gap-1.5 mt-2 px-2.5 py-1.5 bg-amber-50 border border-amber-200/60 rounded-lg">
-                              <Info size={12} className="text-amber-500 shrink-0 mt-0.5" />
-                              <p className="text-[11px] text-amber-700 font-medium line-clamp-2 leading-relaxed">{service.observation}</p>
+                {/* Popular Services Grid (Grouped by Service Group) */}
+                {(() => {
+                  const groupedList = groupServicesByGroup(services);
+                  return (
+                    <div className="space-y-6">
+                      {groupedList.map(({ groupName, items }) => (
+                        <div key={groupName} className="space-y-3">
+                          {(groupedList.length > 1 || groupName !== 'Outros Serviços') && (
+                            <div className="flex items-center gap-2 pt-1">
+                              <span className="h-2 w-2 rounded-full bg-primary-500"></span>
+                              <h4 className="text-sm font-bold uppercase tracking-wider text-slate-600">{groupName}</h4>
+                              <div className="flex-1 h-px bg-slate-100"></div>
                             </div>
                           )}
-                        </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-5">
+                            {items.map(service => (
+                              <div 
+                                key={service.id} 
+                                className="group flex flex-col md:flex-row bg-white rounded-2xl md:rounded-3xl shadow-[0_4px_20px_rgba(0,0,0,0.01)] border border-luxury-100 hover:border-primary-300 overflow-hidden cursor-pointer hover:shadow-md transition-all duration-300 transform hover:-translate-y-0.5"
+                                onClick={() => {
+                                  setSelectedServices([service]);
+                                  setView('book');
+                                }}
+                              >
+                                <div className="relative w-full md:w-32 h-40 md:h-full min-h-[120px] bg-slate-100 overflow-hidden">
+                                  <img 
+                                    src={getGoogleDriveThumbnail(service.imageUrl)} 
+                                    alt={service.name} 
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                    referrerPolicy="no-referrer" 
+                                  />
+                                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/40 via-transparent to-transparent md:hidden"></div>
+                                </div>
+                                
+                                <div className="p-5 flex-1 flex flex-col justify-between">
+                                  <div>
+                                    <div className="flex justify-between items-start gap-2">
+                                      <h4 className="font-semibold text-slate-800 group-hover:text-primary-600 transition-colors text-base md:text-lg line-clamp-1">{service.name}</h4>
+                                    </div>
+                                    <p className="text-slate-400 text-xs line-clamp-2 mt-1 leading-relaxed">{service.description}</p>
+                                    {service.observation && (
+                                      <div className="flex items-start gap-1.5 mt-2 px-2.5 py-1.5 bg-amber-50 border border-amber-200/60 rounded-lg">
+                                        <Info size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                                        <p className="text-[11px] text-amber-700 font-medium line-clamp-2 leading-relaxed">{service.observation}</p>
+                                      </div>
+                                    )}
+                                  </div>
 
-                        <div className="flex justify-between items-center mt-4 pt-3 border-t border-slate-50">
-                          <span className="text-primary-600 font-bold text-base md:text-lg">R$ {Number(service.price).toFixed(2)}</span>
-                          <span className="flex items-center text-xs text-slate-400 gap-1 font-medium bg-slate-50 px-2.5 py-1 rounded-lg">
-                            <Clock size={12} className="text-slate-400" /> {service.durationMinutes} min
-                          </span>
+                                  <div className="flex justify-between items-center mt-4 pt-3 border-t border-slate-50">
+                                    {isVariablePriceService(service) ? (
+                                      <span className="text-amber-700 bg-amber-50 border border-amber-200/60 px-2.5 py-0.5 rounded-lg font-bold text-xs md:text-sm">
+                                        Valor a combinar
+                                      </span>
+                                    ) : (
+                                      <span className="text-primary-600 font-bold text-base md:text-lg">{formatServicePrice(service)}</span>
+                                    )}
+                                    <span className="flex items-center text-xs text-slate-400 gap-1 font-medium bg-slate-50 px-2.5 py-1 rounded-lg">
+                                      <Clock size={12} className="text-slate-400" /> {service.durationMinutes} min
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  );
+                })()}
               </section>
 
             </div>
@@ -578,7 +603,7 @@ Se precisar, estamos sempre à disposição para novos agendamentos! 🥰`;
                       </div>
 
                       <div className="flex items-center justify-between sm:justify-end gap-3 pt-3 sm:pt-0 border-t border-slate-50 sm:border-none">
-                        <span className="text-slate-800 font-bold font-sans text-sm md:text-base sm:mr-3">R$ {Number(servicePrice).toFixed(2)}</span>
+                        <span className="text-slate-800 font-bold font-sans text-sm md:text-base sm:mr-3">{formatServicesTotalPrice(aptServices, apt.totalPrice)}</span>
                         <Badge 
                           color={
                             apt.status === AppointmentStatus.CONFIRMED ? 'green' :

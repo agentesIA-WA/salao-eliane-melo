@@ -1,13 +1,29 @@
 import React, { useState, useMemo } from 'react';
-import { 
-    format, addMonths, subMonths, addWeeks, subWeeks, addDays, subDays, 
-    startOfWeek, endOfWeek, eachDayOfInterval, startOfMonth, endOfMonth, 
-    isSameDay, isSameMonth, parseISO, isToday 
+import {
+    format,
+    addMonths,
+    subMonths,
+    eachDayOfInterval,
+    endOfMonth,
+    parseISO,
+    isToday
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Scissors, MessageCircle, Pencil, FileText } from 'lucide-react';
+import {
+    ChevronLeft,
+    ChevronRight,
+    Calendar as CalendarIcon,
+    User,
+    MessageCircle,
+    Pencil,
+    FileText,
+    Lock
+} from 'lucide-react';
 import { Appointment, AppointmentStatus, Service, Professional, BusinessConfig } from '../types';
 import { Badge } from './Shared';
+import { isDateInBlockedSlot, timeToMinutes, formatServicesTotalPrice } from '../services/serviceGroups';
+
+const WEEKDAYS_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
 interface AdminCalendarViewProps {
     appointments: Appointment[];
@@ -18,11 +34,16 @@ interface AdminCalendarViewProps {
     onMessage: (apt: Appointment) => void;
 }
 
-export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({ 
-    appointments, services, professionals, businessConfig, onEdit, onMessage 
+export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
+    appointments,
+    services,
+    professionals,
+    businessConfig,
+    onEdit,
+    onMessage
 }) => {
-    const [viewType, setViewType] = useState<'month' | 'week' | 'day'>('month');
-    const [currentDate, setCurrentDate] = useState(new Date());
+    const [currentMonthDate, setCurrentMonthDate] = useState<Date>(() => new Date());
+    const [selectedDate, setSelectedDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
 
     const sortedApts = useMemo(() => {
         return appointments
@@ -34,182 +55,102 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
             });
     }, [appointments]);
 
+    const appointmentsByDate = useMemo(() => {
+        const map: Record<string, Appointment[]> = {};
+        for (const apt of sortedApts) {
+            if (!map[apt.date]) map[apt.date] = [];
+            map[apt.date].push(apt);
+        }
+        return map;
+    }, [sortedApts]);
+
     const navigatePrevious = () => {
-        if (viewType === 'month') setCurrentDate(subMonths(currentDate, 1));
-        if (viewType === 'week') setCurrentDate(subWeeks(currentDate, 1));
-        if (viewType === 'day') setCurrentDate(subDays(currentDate, 1));
+        const prev = subMonths(currentMonthDate, 1);
+        setCurrentMonthDate(prev);
+        setSelectedDate(format(new Date(prev.getFullYear(), prev.getMonth(), 1), 'yyyy-MM-dd'));
     };
 
     const navigateNext = () => {
-        if (viewType === 'month') setCurrentDate(addMonths(currentDate, 1));
-        if (viewType === 'week') setCurrentDate(addWeeks(currentDate, 1));
-        if (viewType === 'day') setCurrentDate(addDays(currentDate, 1));
+        const next = addMonths(currentMonthDate, 1);
+        setCurrentMonthDate(next);
+        setSelectedDate(format(new Date(next.getFullYear(), next.getMonth(), 1), 'yyyy-MM-dd'));
     };
 
     const navigateToday = () => {
-        setCurrentDate(new Date());
-    };
-
-    const getAppointmentsForDate = (date: Date) => {
-        return sortedApts.filter(apt => isSameDay(parseISO(apt.date), date));
+        const now = new Date();
+        setCurrentMonthDate(now);
+        setSelectedDate(format(now, 'yyyy-MM-dd'));
     };
 
     const statusColors: Record<string, string> = {
         [AppointmentStatus.PENDING]: 'bg-yellow-400',
         [AppointmentStatus.CONFIRMED]: 'bg-green-500',
+        [AppointmentStatus.IN_PROGRESS]: 'bg-purple-500',
         [AppointmentStatus.COMPLETED]: 'bg-blue-500',
         [AppointmentStatus.CANCELLED]: 'bg-red-500',
     };
 
-    const renderMonthView = () => {
-        const start = startOfWeek(startOfMonth(currentDate));
-        const end = endOfWeek(endOfMonth(currentDate));
+    const { leadingEmptyDays, monthDays } = useMemo(() => {
+        const year = currentMonthDate.getFullYear();
+        const monthIndex = currentMonthDate.getMonth();
+        const start = new Date(year, monthIndex, 1);
+        const end = endOfMonth(start);
         const days = eachDayOfInterval({ start, end });
+        const blockedSlots = Array.isArray(businessConfig?.blockedSlots) ? businessConfig.blockedSlots : [];
 
-        const weekDays = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+        const mappedDays = days.map(d => {
+            const val = format(d, 'yyyy-MM-dd');
+            const dayOfWeek = d.getDay();
+            const schedule = businessConfig.days?.[dayOfWeek];
+            const isClosed = !schedule || !schedule.isOpen;
 
-        return (
-            <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
-                <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/50">
-                    {weekDays.map(day => (
-                        <div key={day} className="py-3 text-center text-xs font-bold text-slate-500 uppercase tracking-wider">
-                            {day}
-                        </div>
-                    ))}
-                </div>
-                <div className="grid grid-cols-7 auto-rows-fr">
-                    {days.map((day, idx) => {
-                        const dayApts = getAppointmentsForDate(day);
-                        const isCurrentMonth = isSameMonth(day, currentDate);
-                        const isTodayDate = isToday(day);
+            const dayBlocks = blockedSlots.filter(b => isDateInBlockedSlot(val, b));
+            const workStart = schedule?.start ? timeToMinutes(schedule.start) : 8 * 60;
+            const workEnd = schedule?.end ? timeToMinutes(schedule.end) : 18 * 60;
+            const hasFullOrPartialBlock = dayBlocks.length > 0;
+            const fullBlock = dayBlocks.find(b => {
+                const bStart = timeToMinutes(b.time || '00:00');
+                const bDur = Math.max(1, Number(b.durationMinutes) || 1440);
+                return bDur >= 1440 || (bStart <= workStart && bStart + bDur >= workEnd);
+            });
+            const blockReason =
+                fullBlock?.reason?.trim() ||
+                dayBlocks.map(b => b.reason?.trim()).find(Boolean) ||
+                undefined;
 
-                        return (
-                            <div 
-                                key={day.toString()} 
-                                onClick={() => {
-                                    setCurrentDate(day);
-                                    setViewType('day');
-                                }}
-                                className={`min-h-[100px] p-2 border-b border-r border-slate-100 transition-colors cursor-pointer hover:bg-slate-50
-                                    ${!isCurrentMonth ? 'bg-slate-50/30' : 'bg-white'}
-                                    ${idx % 7 === 6 ? 'border-r-0' : ''}
-                                `}
-                            >
-                                <div className="flex justify-between items-start mb-2">
-                                    <span className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-bold
-                                        ${isTodayDate ? 'bg-primary-600 text-white shadow-md' : 
-                                          !isCurrentMonth ? 'text-slate-400' : 'text-slate-700'}
-                                    `}>
-                                        {format(day, 'd')}
-                                    </span>
-                                    {dayApts.length > 0 && (
-                                        <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">
-                                            {dayApts.length}
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="space-y-1 mt-1">
-                                    {dayApts.slice(0, 3).map(apt => (
-                                        <div key={apt.id} className="flex items-center gap-1.5 text-[10px] bg-slate-50 p-1 rounded border border-slate-100 truncate">
-                                            <span className={`w-2 h-2 rounded-full shrink-0 ${statusColors[apt.status] || 'bg-slate-300'}`}></span>
-                                            <span className="truncate font-medium text-slate-700">{apt.time} - {apt.userName.split(' ')[0]}</span>
-                                        </div>
-                                    ))}
-                                    {dayApts.length > 3 && (
-                                        <div className="text-[10px] text-primary-500 font-bold pl-1">
-                                            +{dayApts.length - 3} mais
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
-        );
-    };
+            return {
+                dateObj: d,
+                val,
+                dayNumber: format(d, 'dd'),
+                weekdayShort: WEEKDAYS_SHORT[dayOfWeek],
+                isClosed,
+                isTodayDate: isToday(d),
+                isBlockedDay: hasFullOrPartialBlock,
+                blockReason,
+                dayBlocks,
+                apts: appointmentsByDate[val] || []
+            };
+        });
 
-    const renderWeekView = () => {
-        const start = startOfWeek(currentDate);
-        const end = endOfWeek(currentDate);
-        const days = eachDayOfInterval({ start, end });
+        return {
+            leadingEmptyDays: start.getDay(),
+            monthDays: mappedDays
+        };
+    }, [currentMonthDate, businessConfig, appointmentsByDate]);
 
-        return (
-            <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm flex flex-col">
-                <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/50">
-                    {days.map(day => (
-                        <div key={day.toString()} className="py-3 text-center border-r border-slate-100 last:border-r-0">
-                            <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">{format(day, 'EEE', { locale: ptBR })}</div>
-                            <div className={`mt-1 inline-flex w-8 h-8 items-center justify-center rounded-full text-sm font-bold
-                                ${isToday(day) ? 'bg-primary-600 text-white shadow-md' : 'text-slate-800'}
-                            `}>
-                                {format(day, 'd')}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                <div className="grid grid-cols-7 min-h-[500px] bg-slate-50/20">
-                    {days.map((day, idx) => {
-                        const dayApts = getAppointmentsForDate(day);
-                        return (
-                            <div key={day.toString()} className={`border-r border-slate-100 last:border-r-0 p-2 space-y-2 ${isToday(day) ? 'bg-primary-50/10' : ''}`}>
-                                {dayApts.length === 0 ? (
-                                    <div className="text-center text-slate-300 text-[10px] font-medium pt-4">Livre</div>
-                                ) : (
-                                    dayApts.map(apt => renderAppointmentCard(apt, true))
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
-        );
-    };
+    const selectedDayInfo = useMemo(() => {
+        return monthDays.find(d => d.val === selectedDate) || null;
+    }, [monthDays, selectedDate]);
 
-    const renderDayView = () => {
-        const dayApts = getAppointmentsForDate(currentDate);
+    const selectedDayApts = useMemo(() => {
+        return appointmentsByDate[selectedDate] || [];
+    }, [appointmentsByDate, selectedDate]);
 
-        return (
-            <div className="bg-white rounded-2xl border border-slate-100 p-6 shadow-sm min-h-[400px]">
-                <h3 className="text-lg font-serif font-bold text-slate-800 mb-6 flex items-center gap-2">
-                    <CalendarIcon size={20} className="text-primary-500" />
-                    Agenda de {format(currentDate, "EEEE, dd 'de' MMMM", { locale: ptBR })}
-                </h3>
-
-                {dayApts.length === 0 ? (
-                    <div className="text-center py-12">
-                        <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <CalendarIcon size={24} className="text-slate-300" />
-                        </div>
-                        <p className="text-slate-500 font-medium">Nenhum agendamento para este dia.</p>
-                    </div>
-                ) : (
-                    <div className="space-y-4 max-w-3xl">
-                        {dayApts.map(apt => renderAppointmentCard(apt, false))}
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    const renderAppointmentCard = (apt: Appointment, compact: boolean) => {
+    const renderAppointmentCard = (apt: Appointment) => {
         const ids = apt.serviceId ? apt.serviceId.split(',') : [];
         const aptServices = services.filter(s => ids.includes(s.id));
         const serviceName = aptServices.map(s => s.name).join(', ') || 'Outro';
         const pro = professionals.find(p => p.id === apt.professionalId);
-
-        if (compact) {
-            return (
-                <div key={apt.id} className="bg-white border border-slate-200 p-2 rounded-xl shadow-sm hover:border-primary-300 transition-colors group cursor-pointer" onClick={() => onEdit(apt)}>
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[apt.status] || 'bg-slate-300'}`}></span>
-                        <span className="text-[11px] font-bold text-slate-800">{apt.time}</span>
-                    </div>
-                    <div className="text-xs font-semibold text-slate-700 truncate">{apt.userName}</div>
-                    <div className="text-[10px] text-slate-500 truncate mt-0.5">{serviceName}</div>
-                </div>
-            );
-        }
 
         return (
             <div key={apt.id} className="flex gap-4 p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-slate-200 transition-all group">
@@ -217,11 +158,12 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
                     <span className="text-lg font-bold text-primary-600">{apt.time}</span>
                     <span className={`w-3 h-3 rounded-full mt-2 ${statusColors[apt.status] || 'bg-slate-300'}`}></span>
                 </div>
-                <div className="flex-1">
-                    <div className="flex justify-between items-start">
+                <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start gap-2">
                         <div>
                             <h4 className="font-bold text-slate-900 text-base">{apt.userName}</h4>
                             <p className="text-sm text-slate-600 mt-0.5">{serviceName}</p>
+                            <p className="text-xs font-bold text-primary-600 mt-0.5">{formatServicesTotalPrice(aptServices, apt.totalPrice)}</p>
                         </div>
                         <Badge color={
                             apt.status === AppointmentStatus.CONFIRMED ? 'green' :
@@ -229,7 +171,7 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
                             apt.status === AppointmentStatus.CANCELLED ? 'red' : 'gray'
                         }>{apt.status}</Badge>
                     </div>
-                    <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
+                    <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-slate-500">
                         {pro && (
                             <span className="flex items-center gap-1.5 font-medium"><User size={14} className="text-slate-400" /> {pro.name}</span>
                         )}
@@ -245,10 +187,10 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
                     )}
                 </div>
                 <div className="flex flex-col gap-2 shrink-0 justify-center">
-                    <button onClick={() => onEdit(apt)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors" title="Editar / Reagendar">
+                    <button onClick={() => onEdit(apt)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors cursor-pointer" title="Editar / Reagendar">
                         <Pencil size={16} />
                     </button>
-                    <button onClick={() => onMessage(apt)} className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors" title="Enviar WhatsApp">
+                    <button onClick={() => onMessage(apt)} className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors cursor-pointer" title="Enviar WhatsApp">
                         <MessageCircle size={16} />
                     </button>
                 </div>
@@ -257,55 +199,172 @@ export const AdminCalendarView: React.FC<AdminCalendarViewProps> = ({
     };
 
     return (
-        <div className="space-y-4 font-sans animate-in fade-in duration-300">
+        <div className="space-y-6 font-sans animate-in fade-in duration-300">
             {/* Toolbar do Calendário */}
             <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-3 md:p-4 rounded-2xl border border-slate-100 shadow-sm gap-4">
-                
                 <div className="flex items-center gap-2">
-                    <button onClick={navigatePrevious} className="p-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition-colors">
+                    <button onClick={navigatePrevious} className="p-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition-colors cursor-pointer">
                         <ChevronLeft size={18} />
                     </button>
-                    <button onClick={navigateToday} className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">
+                    <button onClick={navigateToday} className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer">
                         Hoje
                     </button>
-                    <button onClick={navigateNext} className="p-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition-colors">
+                    <button onClick={navigateNext} className="p-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition-colors cursor-pointer">
                         <ChevronRight size={18} />
                     </button>
-                    
-                    <div className="ml-2 font-serif font-bold text-lg text-slate-800 capitalize w-48 text-center">
-                        {viewType === 'month' && format(currentDate, "MMMM yyyy", { locale: ptBR })}
-                        {viewType === 'week' && `${format(startOfWeek(currentDate), "dd MMM", { locale: ptBR })} - ${format(endOfWeek(currentDate), "dd MMM", { locale: ptBR })}`}
-                        {viewType === 'day' && format(currentDate, "dd 'de' MMM, yyyy", { locale: ptBR })}
+
+                    <div className="ml-2 font-serif font-bold text-lg text-slate-800 capitalize">
+                        {format(currentMonthDate, "MMMM 'de' yyyy", { locale: ptBR })}
                     </div>
                 </div>
 
-                <div className="flex bg-slate-100 p-1 rounded-xl">
-                    <button 
-                        onClick={() => setViewType('month')}
-                        className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${viewType === 'month' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        Mês
-                    </button>
-                    <button 
-                        onClick={() => setViewType('week')}
-                        className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${viewType === 'week' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        Semana
-                    </button>
-                    <button 
-                        onClick={() => setViewType('day')}
-                        className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${viewType === 'day' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        Dia
-                    </button>
+                <div className="flex items-center gap-3 text-xs text-slate-500">
+                    <span className="inline-flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-primary-600"></span> Selecionado
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span> Bloqueado
+                    </span>
                 </div>
             </div>
 
-            {/* Renderização do Calendário */}
-            {viewType === 'month' && renderMonthView()}
-            {viewType === 'week' && renderWeekView()}
-            {viewType === 'day' && renderDayView()}
+            {/* Grade Mensal Semanal Unificada */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-4 sm:p-6 shadow-sm space-y-4">
+                <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                    {WEEKDAYS_SHORT.map(day => (
+                        <div key={day} className="py-1.5 text-center text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+                            {day}
+                        </div>
+                    ))}
+                </div>
 
+                <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                    {Array.from({ length: leadingEmptyDays }).map((_, idx) => (
+                        <div key={`empty-${idx}`} className="h-20 sm:h-24 rounded-2xl bg-slate-50/40 border border-transparent" />
+                    ))}
+
+                    {monthDays.map(d => {
+                        const isSelected = selectedDate === d.val;
+                        const isBlockedDay = d.isBlockedDay;
+                        const showBlocked = isSelected && isBlockedDay;
+
+                        let cardClasses = 'bg-slate-50 border-slate-200/80 text-slate-800 hover:bg-slate-100 hover:border-slate-300';
+                        if (showBlocked) {
+                            cardClasses = 'bg-amber-500 text-white border-amber-500 shadow-md shadow-amber-500/20 scale-[1.02]';
+                        } else if (isSelected) {
+                            cardClasses = 'bg-primary-600 text-white border-primary-600 shadow-md shadow-primary-500/15 scale-[1.02]';
+                        } else if (isBlockedDay) {
+                            cardClasses = 'bg-amber-50/90 border-amber-300 text-amber-900 hover:bg-amber-100/80';
+                        } else if (d.isClosed) {
+                            cardClasses = 'bg-slate-100/70 border-slate-200/60 text-slate-400 hover:bg-slate-100';
+                        }
+
+                        return (
+                            <button
+                                key={d.val}
+                                type="button"
+                                onClick={() => setSelectedDate(d.val)}
+                                className={`h-20 sm:h-24 rounded-2xl border p-1.5 sm:p-2 text-center flex flex-col items-center justify-between transition-all duration-200 cursor-pointer relative ${cardClasses}`}
+                            >
+                                <div className="w-full flex items-center justify-between px-0.5">
+                                    <span className={`text-[9px] sm:text-[10px] uppercase font-semibold tracking-wider ${
+                                        showBlocked ? 'text-amber-100' :
+                                        isSelected ? 'text-primary-100' :
+                                        isBlockedDay ? 'text-amber-700' : 'text-slate-400'
+                                    }`}>
+                                        {d.weekdayShort}
+                                    </span>
+                                    <div className="flex items-center gap-1">
+                                        {isBlockedDay && (
+                                            <Lock size={11} className={showBlocked ? 'text-white' : 'text-amber-600'} />
+                                        )}
+                                        {d.apts.length > 0 && (
+                                            <span className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded-full ${
+                                                isSelected
+                                                    ? 'bg-white/25 text-white'
+                                                    : 'bg-primary-100 text-primary-700'
+                                            }`}>
+                                                {d.apts.length}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="text-base sm:text-xl font-extrabold leading-none">
+                                    {d.dayNumber}
+                                </div>
+
+                                <div className="min-h-[14px] flex items-center justify-center">
+                                    {showBlocked ? (
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-white">
+                                            Bloqueado
+                                        </span>
+                                    ) : d.isClosed && !isBlockedDay ? (
+                                        <span className={`text-[9px] font-bold uppercase ${isSelected ? 'text-white/80' : 'text-red-400'}`}>
+                                            Fechado
+                                        </span>
+                                    ) : d.isTodayDate && !isSelected ? (
+                                        <span className="text-[9px] font-bold uppercase text-primary-600">
+                                            Hoje
+                                        </span>
+                                    ) : null}
+                                </div>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* Painel de aviso de bloqueio quando o dia clicado estiver bloqueado */}
+                {selectedDayInfo?.isBlockedDay && (
+                    <div className="p-4 sm:p-5 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 animate-in fade-in">
+                        <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+                            <Lock size={16} className="text-amber-600 shrink-0" />
+                            <span>Data com Bloqueio Administrativo</span>
+                        </div>
+                        <div className="space-y-1.5 text-xs text-amber-800">
+                            {selectedDayInfo.dayBlocks.map(b => {
+                                const proLabel = b.professionalId === 'ALL'
+                                    ? 'Todo o Salão'
+                                    : professionals.find(p => p.id === b.professionalId)?.name || 'Profissional';
+                                const isFull = Number(b.durationMinutes) >= 1440;
+                                return (
+                                    <div key={b.id} className="flex flex-wrap items-center gap-2">
+                                        <span className="font-semibold">
+                                            • {proLabel} ({isFull ? 'Dia Inteiro' : `${b.time} - ${b.durationMinutes} min`})
+                                        </span>
+                                        {b.reason && (
+                                            <span className="bg-amber-100/90 border border-amber-300/80 text-amber-900 font-semibold px-2.5 py-0.5 rounded-lg">
+                                                Justificativa: {b.reason}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Listagem de Agendamentos do Dia Selecionado */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-sm">
+                <h3 className="text-lg font-serif font-bold text-slate-800 mb-6 flex items-center gap-2 capitalize">
+                    <CalendarIcon size={20} className="text-primary-500" />
+                    Agenda de {format(parseISO(selectedDate), "EEEE, dd 'de' MMMM", { locale: ptBR })}
+                </h3>
+
+                {selectedDayApts.length === 0 ? (
+                    <div className="text-center py-10">
+                        <div className="w-14 h-14 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                            <CalendarIcon size={22} className="text-slate-300" />
+                        </div>
+                        <p className="text-slate-500 text-sm font-medium">Nenhum agendamento para este dia.</p>
+                    </div>
+                ) : (
+                    <div className="space-y-4">
+                        {selectedDayApts.map(apt => renderAppointmentCard(apt))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

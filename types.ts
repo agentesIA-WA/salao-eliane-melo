@@ -11,6 +11,8 @@ export enum AppointmentStatus {
   CANCELLED = 'Cancelado'
 }
 
+export type ServicePriceType = 'fixed' | 'variable';
+
 export interface Service {
   id: string;
   name: string;
@@ -18,6 +20,7 @@ export interface Service {
   description: string;
   durationMinutes: number;
   price: number;
+  priceType?: ServicePriceType;
   imageUrl?: string;
   observation?: string;
 }
@@ -59,6 +62,7 @@ export interface Appointment {
   date: string; // ISO Date string YYYY-MM-DD
   time: string; // HH:mm
   status: AppointmentStatus;
+  totalPrice?: number | null;
   observations?: string;
   rating?: number;
   reviewComment?: string;
@@ -76,9 +80,11 @@ export interface WorkDayConfig {
 export interface BlockedSlot {
   id: string;
   date: string;
+  endDate?: string;
   time: string;
   professionalId: string; // 'ALL' or specific ID
   durationMinutes: number;
+  reason?: string;
 }
 
 export interface BusinessConfig {

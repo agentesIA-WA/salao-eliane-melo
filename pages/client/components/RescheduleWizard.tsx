@@ -2,24 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../../contexts/AppContext';
 import { Service, Professional, AppointmentStatus, Appointment } from '../../../types';
 import { Button, Card, Badge, Input } from '../../../components/Shared';
-import { Calendar, Clock, User as UserIcon, Star, Scissors, LogOut, Plus, ChevronLeft, Phone, Mail, Check, Sparkles, Sliders, ChevronRight, MapPin, MessageCircle, Trash2, RefreshCw, X, Info } from 'lucide-react';
+import { Calendar, Clock, User as UserIcon, Star, Scissors, LogOut, Plus, ChevronLeft, Phone, Mail, Check, Sparkles, Sliders, ChevronRight, MapPin, MessageCircle, Trash2, RefreshCw, X, Info, Lock } from 'lucide-react';
 import { format, startOfToday, endOfMonth, eachDayOfInterval, isSameDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { getGoogleDriveThumbnail } from '../../../services/driveUtils';
+import { calculateCoincidentAvailableSlots, findBlockedSlotConflict, getDayBlockInfo, formatServicePrice, formatServicesTotalPrice } from '../../../services/serviceGroups';
 
-// Helper to convert "HH:mm" to minutes from midnight
-const timeToMinutes = (time: string) => {
-    if (!time) return 0;
-    const [h, m] = time.split(':').map(Number);
-    return h * 60 + m;
-};
-
-// Helper to convert minutes from midnight to "HH:mm"
-const minutesToTime = (minutes: number) => {
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-};
+const WEEKDAYS_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
 interface RescheduleWizardProps {
   appointment: Appointment;
@@ -104,120 +93,74 @@ const RescheduleWizard: React.FC<RescheduleWizardProps> = ({ appointment, onCanc
         return list;
     }, []);
 
-    // Generate dates based on selectedMonth
+    // Generate dates based on selectedMonth (full month weekly grid)
     const today = startOfToday();
-    const days = useMemo(() => {
+    const { leadingEmptyDays, availableDates } = useMemo(() => {
         const [yearStr, monthStr] = selectedMonth.split('-');
-        const year = parseInt(yearStr);
-        const monthIndex = parseInt(monthStr) - 1;
-        
-        let start = new Date(year, monthIndex, 1);
-        const curMonthStr = format(today, 'yyyy-MM');
-        if (selectedMonth === curMonthStr) {
-            start = today;
-        }
-        
-        const end = endOfMonth(new Date(year, monthIndex, 1));
-        if (start > end) {
-            return [];
-        }
-        
-        return eachDayOfInterval({ start, end });
-    }, [selectedMonth, today]);
-    
-    const availableDates = useMemo(() => {
-        return days.map(d => ({
-            val: format(d, 'yyyy-MM-dd'),
-            display: format(d, 'EEE dd', { locale: ptBR }),
-            full: format(d, "dd 'de' MMMM", { locale: ptBR })
-        }));
-    }, [days]);
+        const year = parseInt(yearStr, 10);
+        const monthIndex = parseInt(monthStr, 10) - 1;
+
+        const start = new Date(year, monthIndex, 1);
+        const end = endOfMonth(start);
+        const monthDays = eachDayOfInterval({ start, end });
+
+        const mapped = monthDays.map(d => {
+            const val = format(d, 'yyyy-MM-dd');
+            const dayOfWeek = d.getDay();
+            const schedule = businessConfig.days?.[dayOfWeek];
+            const isClosed = !schedule || !schedule.isOpen;
+            const isPast = d < today;
+
+            const blockInfo = getDayBlockInfo(val, businessConfig, selectedPro?.id);
+            let isBlocked = blockInfo.isBlocked;
+            let blockReason = blockInfo.blockReason;
+
+            if (!isBlocked && !isClosed && !isPast && selectedPro && totalDuration > 0 && blockInfo.blocks.length > 0) {
+                const calc = calculateCoincidentAvailableSlots({
+                    date: val,
+                    professionalId: selectedPro.id,
+                    totalDuration,
+                    appointments,
+                    services,
+                    businessConfig,
+                    excludeAppointmentId: appointment.id
+                });
+                if (calc.dayIsBlocked) {
+                    isBlocked = true;
+                    blockReason = calc.blockReason || blockReason;
+                }
+            }
+
+            return {
+                val,
+                dayNumber: format(d, 'dd'),
+                weekdayShort: WEEKDAYS_SHORT[dayOfWeek],
+                full: format(d, "dd 'de' MMMM", { locale: ptBR }),
+                isPast,
+                isClosed,
+                isBlocked,
+                blockReason
+            };
+        });
+
+        return {
+            leadingEmptyDays: start.getDay(),
+            availableDates: mapped
+        };
+    }, [selectedMonth, today, businessConfig, selectedPro, totalDuration, appointments, services, appointment.id]);
 
     // Calculate available time slots
-    const { availableTimeSlots, dayIsClosed } = useMemo(() => {
-        if (!selectedDate || !selectedPro || selectedServices.length === 0) {
-            return { availableTimeSlots: [], dayIsClosed: false };
-        }
-
-        const dateObj = parseISO(selectedDate);
-        const dayOfWeek = dateObj.getDay();
-        const schedule = businessConfig.days[dayOfWeek];
-
-        if (!schedule || !schedule.isOpen) {
-            return { availableTimeSlots: [], dayIsClosed: true };
-        }
-
-        const workStart = timeToMinutes(schedule.start);
-        const workEnd = timeToMinutes(schedule.end);
-        
-        const hasLunch = schedule.hasLunch;
-        const lunchStart = hasLunch ? timeToMinutes(schedule.lunchStart) : -1;
-        const lunchEnd = hasLunch ? timeToMinutes(schedule.lunchEnd) : -1;
-        
-        const stepMinutes = 30;
-        const serviceDuration = totalDuration;
-
-        // Get existing appointments EXCEPT this current one
-        const proAppointments = appointments.filter(apt => 
-            apt.professionalId === selectedPro.id && 
-            apt.date === selectedDate && 
-            apt.id !== appointment.id &&
-            apt.status !== AppointmentStatus.CANCELLED
-        );
-
-        const busyIntervals = proAppointments.map(apt => {
-            const aptIds = apt.serviceId ? apt.serviceId.split(',') : [];
-            const otherServices = services.filter(s => aptIds.includes(s.id));
-            const duration = otherServices.length > 0 
-                ? otherServices.reduce((sum, s) => sum + Number(s.durationMinutes), 0)
-                : 60;
-            const start = timeToMinutes(apt.time);
-            return { start, end: start + duration };
+    const { availableTimeSlots, dayIsClosed, dayIsBlocked, blockReason } = useMemo(() => {
+        return calculateCoincidentAvailableSlots({
+            date: selectedDate,
+            professionalId: selectedPro?.id,
+            totalDuration,
+            appointments,
+            services,
+            businessConfig,
+            excludeAppointmentId: appointment.id
         });
-
-        if (hasLunch && lunchStart < lunchEnd) {
-             busyIntervals.push({ start: lunchStart, end: lunchEnd });
-        }
-
-        const blockedSlots = businessConfig?.blockedSlots || [];
-        const relevantBlocks = blockedSlots.filter(b => 
-            b.date === selectedDate && 
-            (b.professionalId === 'ALL' || b.professionalId === selectedPro.id)
-        );
-        relevantBlocks.forEach(b => {
-            const start = timeToMinutes(b.time);
-            busyIntervals.push({ start, end: start + Number(b.durationMinutes) });
-        });
-
-        const slots = [];
-        const now = new Date();
-        const currentDateStr = format(now, 'yyyy-MM-dd');
-        const isToday = selectedDate === currentDateStr;
-        const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-        for (let time = workStart; time < workEnd; time += stepMinutes) {
-            const slotStart = time;
-            
-            if (isToday && slotStart <= currentMinutes) {
-                continue;
-            }
-
-            const slotEnd = time + serviceDuration;
-
-            if (slotEnd > workEnd) continue;
-
-            const isBusy = busyIntervals.some(busy => {
-                return slotStart < busy.end && slotEnd > busy.start;
-            });
-
-            if (!isBusy) {
-                slots.push(minutesToTime(time));
-            }
-        }
-
-        return { availableTimeSlots: slots, dayIsClosed: false };
-
-    }, [selectedDate, selectedPro, selectedServices, totalDuration, appointments, services, businessConfig, appointment.id]);
+    }, [selectedDate, selectedPro, totalDuration, appointments, services, businessConfig, appointment.id]);
 
     const sendWhatsAppUpdate = (updatedPro: Professional, updatedDate: string, updatedTime: string) => {
         const cleanPhone = (appointment.clientPhone || '').replace(/\D/g, '');
@@ -235,7 +178,7 @@ ${aptIdStr}💇‍♀️ *Serviços:* ${servicesStr}
 👤 *Profissional:* ${updatedPro.name}
 📅 *Data:* ${dateStr}
 ⏰ *Horário:* ${updatedTime}
-💰 *Valor total:* R$ ${Number(totalPrice).toFixed(2)}
+💰 *Valor total:* ${formatServicesTotalPrice(selectedServices)}
 ${addressStr ? `\n${addressStr}` : ''}
 
 Te aguardamos com muito carinho! 🥰`;
@@ -246,6 +189,16 @@ Te aguardamos com muito carinho! 🥰`;
 
     const handleSave = async () => {
         if (selectedPro && selectedDate && selectedTime && selectedServices.length > 0) {
+            const conflict = findBlockedSlotConflict(
+                selectedDate,
+                selectedTime,
+                totalDuration,
+                selectedPro.id,
+                businessConfig.blockedSlots || [],
+                professionals
+            );
+            if (conflict) return;
+
             await updateAppointment(appointment.id, {
                 serviceId: selectedServices.map(s => s.id).join(','),
                 professionalId: selectedPro.id,
@@ -296,7 +249,7 @@ Te aguardamos com muito carinho! 🥰`;
                             <div>
                                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Serviços Alterados</p>
                                 <p className="font-bold text-slate-800 text-base">{selectedServicesNames}</p>
-                                <p className="text-xs text-slate-500">{totalDuration} minutos • R$ {Number(totalPrice).toFixed(2)}</p>
+                                <p className="text-xs text-slate-500">{totalDuration} minutos • {formatServicesTotalPrice(selectedServices)}</p>
                             </div>
                         </div>
 
@@ -408,7 +361,7 @@ Te aguardamos com muito carinho! 🥰`;
                                                 )}
                                             </div>
                                             <div className="text-right">
-                                                <span className="font-bold text-slate-800 text-sm">R$ {Number(service.price).toFixed(2)}</span>
+                                                <span className="font-bold text-slate-800 text-sm">{formatServicePrice(service)}</span>
                                             </div>
                                         </button>
                                     );
@@ -421,7 +374,7 @@ Te aguardamos com muito carinho! 🥰`;
                                     <p className="font-bold text-slate-800 mt-0.5">{selectedServices.length} serviço(s) selecionado(s)</p>
                                 </div>
                                 <div className="text-right">
-                                    <p className="font-extrabold text-sm text-primary-600">R$ {Number(totalPrice).toFixed(2)}</p>
+                                    <p className="font-extrabold text-sm text-primary-600">{formatServicesTotalPrice(selectedServices)}</p>
                                     <p className="text-slate-500 font-semibold">{totalDuration} min</p>
                                 </div>
                             </div>
@@ -435,7 +388,7 @@ Te aguardamos com muito carinho! 🥰`;
                             <div className="bg-primary-50/50 p-4 rounded-2xl border border-primary-100">
                                 <h4 className="text-[10px] font-bold text-primary-800 uppercase tracking-wide">Serviços Selecionados</h4>
                                 <p className="font-bold text-slate-800 text-sm mt-1">{selectedServicesNames}</p>
-                                <p className="text-xs text-slate-500 leading-normal mt-0.5">Duração total: {totalDuration} minutos • R$ {Number(totalPrice).toFixed(2)}</p>
+                                <p className="text-xs text-slate-500 leading-normal mt-0.5">Duração total: {totalDuration} minutos • {formatServicesTotalPrice(selectedServices)}</p>
                             </div>
 
                             {/* Select Pro */}
@@ -504,18 +457,84 @@ Te aguardamos com muito carinho! 🥰`;
                                     <div className="space-y-3 border-t border-slate-100 pt-5">
                                         <h3 className="font-bold text-slate-800 text-sm tracking-wider uppercase mb-1">4. Escolha o Dia ({selectedMonth ? monthsOfBooking.find(m => m.val === selectedMonth)?.label : ''})</h3>
                                         {availableDates.length > 0 ? (
-                                            <div className="flex gap-2.5 overflow-x-auto pb-3 pl-1 scrollbar-thin">
-                                                {availableDates.map(d => (
-                                                    <button 
-                                                        key={d.val}
-                                                        type="button"
-                                                        onClick={() => { setSelectedDate(d.val); setSelectedTime(''); }}
-                                                        className={`flex flex-col items-center justify-center p-3 rounded-2xl min-w-[76px] h-20 transition-all cursor-pointer border ${selectedDate === d.val ? 'bg-primary-600 text-white border-primary-600 shadow-md shadow-primary-500/20 scale-105' : 'bg-slate-50 text-slate-800 border-slate-200 hover:border-slate-300'}`}
-                                                    >
-                                                        <div className={`text-[10px] uppercase font-semibold tracking-wider ${selectedDate === d.val ? 'text-primary-100' : 'text-slate-400'}`}>{d.display.split(' ')[0]}</div>
-                                                        <div className="text-xl font-extrabold mt-1">{d.display.split(' ')[1]}</div>
-                                                    </button>
-                                                ))}
+                                            <div className="space-y-2">
+                                                <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                                                    {WEEKDAYS_SHORT.map(w => (
+                                                        <div key={w} className="text-center text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 py-1">
+                                                            {w}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                                                    {Array.from({ length: leadingEmptyDays }).map((_, idx) => (
+                                                        <div key={`empty-${idx}`} className="h-16 sm:h-20 rounded-2xl bg-slate-50/40 border border-transparent" />
+                                                    ))}
+                                                    {availableDates.map(d => {
+                                                        const isSelected = selectedDate === d.val;
+                                                        const isBlockedDay = d.isBlocked;
+                                                        const showBlocked = isSelected && isBlockedDay;
+                                                        const isDisabled = d.isPast || d.isClosed;
+
+                                                        let cardClass = 'bg-slate-50 text-slate-800 border-slate-200 hover:border-slate-300';
+                                                        if (isDisabled) {
+                                                            cardClass = 'bg-slate-100/70 border-slate-200/50 text-slate-300 cursor-not-allowed opacity-60';
+                                                        } else if (showBlocked) {
+                                                            cardClass = 'bg-amber-500 text-white border-amber-500 shadow-md shadow-amber-500/20 scale-[1.02]';
+                                                        } else if (isSelected) {
+                                                            cardClass = 'bg-primary-600 text-white border-primary-600 shadow-md shadow-primary-500/20 scale-[1.02]';
+                                                        } else if (isBlockedDay) {
+                                                            cardClass = 'bg-amber-50/90 border-amber-300 text-amber-900 hover:bg-amber-100/80';
+                                                        }
+
+                                                        return (
+                                                            <button 
+                                                                key={d.val}
+                                                                type="button"
+                                                                disabled={isDisabled}
+                                                                onClick={() => { setSelectedDate(d.val); setSelectedTime(''); }}
+                                                                className={`flex flex-col items-center justify-between p-1.5 rounded-2xl h-16 sm:h-20 transition-all border ${isDisabled ? '' : 'cursor-pointer'} ${cardClass}`}
+                                                            >
+                                                                <div className="w-full flex items-center justify-center gap-1">
+                                                                    <span className={`text-[9px] sm:text-[10px] uppercase font-semibold tracking-wider ${
+                                                                        showBlocked ? 'text-amber-100' :
+                                                                        isSelected ? 'text-primary-100' :
+                                                                        isBlockedDay && !isDisabled ? 'text-amber-700' : 'text-slate-400'
+                                                                    }`}>
+                                                                        {d.weekdayShort}
+                                                                    </span>
+                                                                    {isBlockedDay && !isDisabled && (
+                                                                        <Lock size={11} className={showBlocked ? 'text-white' : 'text-amber-600'} />
+                                                                    )}
+                                                                </div>
+                                                                <div className="text-base sm:text-xl font-extrabold leading-none">{d.dayNumber}</div>
+                                                                <div className="min-h-[12px] flex items-center justify-center">
+                                                                    {d.isClosed ? (
+                                                                        <span className="text-[8px] sm:text-[9px] font-bold uppercase text-red-400">Fechado</span>
+                                                                    ) : showBlocked ? (
+                                                                        <span className="text-[8px] sm:text-[9px] font-bold uppercase text-white">Bloqueado</span>
+                                                                    ) : null}
+                                                                </div>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+
+                                                {selectedDate && dayIsBlocked && (
+                                                    <div className="p-5 bg-amber-50 rounded-2xl text-center border border-amber-200 space-y-2 mt-3 animate-in fade-in">
+                                                        <div className="w-10 h-10 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+                                                            <Lock size={18} />
+                                                        </div>
+                                                        <p className="text-amber-900 font-bold text-sm">Data Bloqueada para Agendamentos</p>
+                                                        <p className="text-xs text-amber-700">
+                                                            Este dia encontra-se bloqueado na agenda do salão. Selecione outra data disponível.
+                                                        </p>
+                                                        {blockReason && (
+                                                            <p className="text-xs text-amber-900 font-semibold bg-amber-100/90 border border-amber-300/80 rounded-xl px-3.5 py-2 inline-block mt-1">
+                                                                Justificativa: {blockReason}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                         ) : (
                                             <p className="text-xs text-slate-400">Nenhum dia disponível para este mês.</p>
@@ -537,6 +556,21 @@ Te aguardamos com muito carinho! 🥰`;
                                     <div className="p-6 bg-red-50 rounded-2xl text-center border border-red-100">
                                         <p className="text-red-800 font-bold">Inoperante</p>
                                         <p className="text-xs text-red-600 mt-1 font-medium">O estabelecimento está fechado ou não opera neste dia da semana.</p>
+                                    </div>
+                                ) : dayIsBlocked ? (
+                                    <div className="p-6 bg-amber-50 rounded-2xl text-center border border-amber-200 space-y-2">
+                                        <div className="w-10 h-10 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+                                            <Lock size={18} />
+                                        </div>
+                                        <p className="text-amber-900 font-bold text-sm">Data Bloqueada para Agendamentos</p>
+                                        <p className="text-xs text-amber-700">
+                                            Este dia encontra-se bloqueado na agenda do salão. Volte e selecione outra data disponível.
+                                        </p>
+                                        {blockReason && (
+                                            <p className="text-xs text-amber-900 font-semibold bg-amber-100/90 border border-amber-300/80 rounded-xl px-3.5 py-2 inline-block mt-1">
+                                                Justificativa: {blockReason}
+                                            </p>
+                                        )}
                                     </div>
                                 ) : availableTimeSlots.length > 0 ? (
                                     <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 pt-1 animate-in fade-in duration-300">
@@ -600,7 +634,7 @@ Te aguardamos com muito carinho! 🥰`;
                             </Button>
                             <Button 
                                 className="flex-1 bg-primary-600 text-white py-3 hover:bg-primary-700 font-sans" 
-                                disabled={!selectedPro || !selectedDate} 
+                                disabled={!selectedPro || !selectedDate || dayIsBlocked || dayIsClosed} 
                                 onClick={() => setStep(3)}
                             >
                                 Escolher Horário

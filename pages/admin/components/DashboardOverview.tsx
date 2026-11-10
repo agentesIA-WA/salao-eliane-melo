@@ -6,6 +6,7 @@ import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, P
 import { format, parseISO, isSameWeek, isSameMonth } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { calculateAppointmentRevenue, formatServicesTotalPrice } from '../../../services/serviceGroups';
 
 const DashboardOverview: React.FC = () => {
     const { appointments, services, professionals } = useApp();
@@ -29,10 +30,8 @@ const DashboardOverview: React.FC = () => {
         .filter(a => a.status === AppointmentStatus.COMPLETED)
         .reduce((sum, apt) => {
             const ids = apt.serviceId ? apt.serviceId.split(',').filter(Boolean) : [];
-            const aptTotal = services
-                .filter(s => ids.includes(s.id))
-                .reduce((s, svc) => s + Number(svc.price), 0);
-            return sum + aptTotal;
+            const aptServices = services.filter(s => ids.includes(s.id));
+            return sum + calculateAppointmentRevenue(aptServices, apt.totalPrice);
         }, 0);
 
     const weekDayNames = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -254,7 +253,7 @@ const DashboardOverview: React.FC = () => {
                                                         </div>
                                                         <div className="text-left sm:text-right shrink-0">
                                                             <p className="font-bold text-slate-800">Horário: {apt.time}</p>
-                                                            <p className="text-xs font-semibold text-primary-600">R$ {Number(totalPrice) > 0 ? Number(totalPrice).toFixed(2) : '120,00'}</p>
+                                                            <p className="text-xs font-semibold text-primary-600">{formatServicesTotalPrice(aptServices, apt.totalPrice)}</p>
                                                         </div>
                                                     </div>
                                                 );

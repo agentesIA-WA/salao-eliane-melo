@@ -17,12 +17,66 @@ const ProfessionalsManager: React.FC = () => {
     const [imageInputMode, setImageInputMode] = useState<'upload' | 'url'>('upload');
     const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+    const compressImageIfNeeded = (file: File): Promise<File> => {
+        return new Promise((resolve) => {
+            const safeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+            if (file.size <= 1.5 * 1024 * 1024 && safeTypes.includes(file.type)) {
+                resolve(file);
+                return;
+            }
+
+            const img = new Image();
+            const objectUrl = URL.createObjectURL(file);
+            img.onload = () => {
+                URL.revokeObjectURL(objectUrl);
+                const maxDim = 1600;
+                let { width, height } = img;
+                if (width > maxDim || height > maxDim) {
+                    if (width > height) {
+                        height = Math.round((height * maxDim) / width);
+                        width = maxDim;
+                    } else {
+                        width = Math.round((width * maxDim) / height);
+                        height = maxDim;
+                    }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    resolve(file);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                canvas.toBlob(
+                    (blob) => {
+                        if (!blob) {
+                            resolve(file);
+                            return;
+                        }
+                        const baseName = file.name.replace(/\.[^.]+$/, '') || 'avatar';
+                        resolve(new File([blob], `${baseName}.webp`, { type: 'image/webp' }));
+                    },
+                    'image/webp',
+                    0.85
+                );
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                resolve(file);
+            };
+            img.src = objectUrl;
+        });
+    };
+
     const handleImageUpload = async (file: File) => {
         setIsUploading(true);
         setUploadError('');
         try {
+            const processedFile = await compressImageIfNeeded(file);
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append('image', processedFile);
             const response = await fetch('./backend/upload.php', {
                 method: 'POST',
                 body: formData,

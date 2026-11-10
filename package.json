@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"php -S localhost:8080 -t backend\" \"vite\"",
+    "dev": "concurrently \"php -d upload_max_filesize=10M -d post_max_size=12M -S localhost:8080 -t backend\" \"vite\"",
     "build": "vite build",
     "preview": "vite preview"
   },

@@ -33,7 +33,54 @@ switch ($action) {
 // ============================================================
 // SERVICES
 // ============================================================
+function ensureServicesSchema($db) {
+    static $checked = false;
+    if ($checked || !$db) return;
+    $checked = true;
+    try {
+        $colsStmt = $db->query("SHOW COLUMNS FROM `services`");
+        $existingCols = [];
+        foreach ($colsStmt->fetchAll() as $col) {
+            if (!empty($col['Field'])) {
+                $existingCols[strtolower((string) $col['Field'])] = true;
+            }
+        }
+        if (empty($existingCols['groupname'])) {
+            $db->exec("ALTER TABLE `services` ADD COLUMN `groupName` VARCHAR(255) DEFAULT NULL AFTER `name`");
+        }
+        if (empty($existingCols['pricetype'])) {
+            $db->exec("ALTER TABLE `services` ADD COLUMN `priceType` VARCHAR(20) NOT NULL DEFAULT 'fixed' AFTER `price`");
+        }
+    } catch (Throwable $e) {
+        error_log('[ensureServicesSchema] ' . $e->getMessage());
+    }
+}
+
+function ensureAppointmentsSchema($db) {
+    static $checked = false;
+    if ($checked || !$db) return;
+    $checked = true;
+    try {
+        $colsStmt = $db->query("SHOW COLUMNS FROM `appointments`");
+        $existingCols = [];
+        foreach ($colsStmt->fetchAll() as $col) {
+            if (!empty($col['Field'])) {
+                $existingCols[strtolower((string) $col['Field'])] = true;
+            }
+        }
+        if (empty($existingCols['observations'])) {
+            $db->exec("ALTER TABLE `appointments` ADD COLUMN `observations` TEXT DEFAULT NULL");
+        }
+        if (empty($existingCols['totalprice'])) {
+            $db->exec("ALTER TABLE `appointments` ADD COLUMN `totalPrice` DECIMAL(10,2) DEFAULT NULL AFTER `status`");
+        }
+    } catch (Throwable $e) {
+        error_log('[ensureAppointmentsSchema] ' . $e->getMessage());
+    }
+}
+
 function handleServices($db, $method) {
+    ensureServicesSchema($db);
     if ($method === 'GET') {
         $stmt = $db->query("SELECT * FROM services");
         echo json_encode($stmt->fetchAll());
@@ -41,32 +88,44 @@ function handleServices($db, $method) {
         requireAdminAuth();
         $data = json_decode(file_get_contents('php://input'), true);
         if (!validateServiceData($data)) return;
-        $stmt = $db->prepare("INSERT INTO services (id, name, description, durationMinutes, price, imageUrl, observation) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $priceType = (($data['priceType'] ?? 'fixed') === 'variable') ? 'variable' : 'fixed';
+        $price = $priceType === 'variable' ? 0.0 : floatval($data['price'] ?? 0);
+        $stmt = $db->prepare("INSERT INTO services (id, name, groupName, description, durationMinutes, price, priceType, imageUrl, observation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([
             sanitize($data['id']),
             sanitize($data['name']),
+            sanitize($data['groupName'] ?? ''),
             sanitize($data['description'] ?? ''),
             intval($data['durationMinutes']),
-            floatval($data['price']),
+            $price,
+            $priceType,
             sanitize($data['imageUrl'] ?? ''),
             sanitize($data['observation'] ?? '')
         ]);
+        $data['price'] = $price;
+        $data['priceType'] = $priceType;
         echo json_encode($data);
     } elseif ($method === 'PUT') {
         requireAdminAuth();
         $data = json_decode(file_get_contents('php://input'), true);
         $id = sanitize($_GET['id'] ?? '');
         if (empty($id)) { badRequest('ID é obrigatório'); return; }
-        $stmt = $db->prepare("UPDATE services SET name=?, description=?, durationMinutes=?, price=?, imageUrl=?, observation=? WHERE id=?");
+        $priceType = (($data['priceType'] ?? 'fixed') === 'variable') ? 'variable' : 'fixed';
+        $price = $priceType === 'variable' ? 0.0 : floatval($data['price'] ?? 0);
+        $stmt = $db->prepare("UPDATE services SET name=?, groupName=?, description=?, durationMinutes=?, price=?, priceType=?, imageUrl=?, observation=? WHERE id=?");
         $stmt->execute([
             sanitize($data['name'] ?? ''),
+            sanitize($data['groupName'] ?? ''),
             sanitize($data['description'] ?? ''),
             intval($data['durationMinutes'] ?? 0),
-            floatval($data['price'] ?? 0),
+            $price,
+            $priceType,
             sanitize($data['imageUrl'] ?? ''),
             sanitize($data['observation'] ?? ''),
             $id
         ]);
+        $data['price'] = $price;
+        $data['priceType'] = $priceType;
         echo json_encode($data);
     } elseif ($method === 'DELETE') {
         requireAdminAuth();
@@ -136,7 +195,69 @@ function handleProfessionals($db, $method) {
 // ============================================================
 // APPOINTMENTS
 // ============================================================
+function timeToMinutes($time) {
+    if (!is_string($time) || strpos($time, ':') === false) return 0;
+    $parts = explode(':', $time);
+    return (intval($parts[0]) * 60) + intval($parts[1] ?? 0);
+}
+
+function minutesToTime($minutes) {
+    $safe = max(0, intval($minutes));
+    $h = floor($safe / 60);
+    $m = $safe % 60;
+    return sprintf('%02d:%02d', $h, $m);
+}
+
+function getServiceTotalDuration($db, $serviceIdCsv) {
+    $ids = array_values(array_filter(array_map('trim', explode(',', (string) $serviceIdCsv))));
+    if (empty($ids)) return 60;
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare("SELECT COALESCE(SUM(durationMinutes), 0) FROM services WHERE id IN ($placeholders)");
+    $stmt->execute($ids);
+    $total = intval($stmt->fetchColumn());
+    return $total > 0 ? $total : 60;
+}
+
+function hasBlockedSlotConflict($db, $tenantId, $date, array $newItems) {
+    if (empty($newItems)) return false;
+    $stmt = $db->prepare("SELECT config_value FROM business_config WHERE config_key = 'main' LIMIT 1");
+    $stmt->execute();
+    $row = $stmt->fetch();
+    if (!$row || empty($row['config_value'])) return false;
+    $config = json_decode($row['config_value'], true);
+    if (!is_array($config) || empty($config['blockedSlots']) || !is_array($config['blockedSlots'])) return false;
+
+    foreach ($config['blockedSlots'] as $block) {
+        if (!is_array($block)) continue;
+        $blockStartDate = trim((string) ($block['date'] ?? ''));
+        if ($blockStartDate === '') continue;
+        $blockEndDate = trim((string) ($block['endDate'] ?? ''));
+        if ($blockEndDate === '' || $blockEndDate < $blockStartDate) {
+            $blockEndDate = $blockStartDate;
+        }
+        if ($date < $blockStartDate || $date > $blockEndDate) continue;
+
+        $blockProId = trim((string) ($block['professionalId'] ?? 'ALL'));
+        $blockStartMin = timeToMinutes((string) ($block['time'] ?? '00:00'));
+        $blockDuration = max(1, intval($block['durationMinutes'] ?? 1440));
+        $blockEndMin = $blockStartMin + $blockDuration;
+
+        foreach ($newItems as $item) {
+            $proId = (string) ($item['professionalId'] ?? '');
+            if ($blockProId !== 'ALL' && $blockProId !== $proId) continue;
+            $itemStart = timeToMinutes((string) ($item['startTime'] ?? '09:00'));
+            $itemEnd = timeToMinutes((string) ($item['endTime'] ?? '10:00'));
+            if ($itemStart < $blockEndMin && $itemEnd > $blockStartMin) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 function handleAppointments($db, $method) {
+    ensureServicesSchema($db);
+    ensureAppointmentsSchema($db);
     if ($method === 'GET') {
         $stmt = $db->query("SELECT * FROM appointments ORDER BY date DESC, time DESC");
         echo json_encode($stmt->fetchAll());
@@ -144,14 +265,31 @@ function handleAppointments($db, $method) {
         $data = json_decode(file_get_contents('php://input'), true);
         if (!validateAppointmentData($data)) return;
 
+        $aptDate = sanitize($data['date']);
+        $aptTime = sanitize($data['time']);
+        $aptProId = sanitize($data['professionalId']);
+        $duration = getServiceTotalDuration($db, $data['serviceId'] ?? '');
+        $startMin = timeToMinutes($aptTime);
+        $newItems = [[
+            'professionalId' => $aptProId,
+            'startTime' => $aptTime,
+            'endTime' => minutesToTime($startMin + $duration)
+        ]];
+
+        if (hasBlockedSlotConflict($db, 'default', $aptDate, $newItems)) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Conflito: este período ou horário está bloqueado na agenda.']);
+            return;
+        }
+
         // Verificação de conflito de horário
         $conflictStmt = $db->prepare(
             "SELECT COUNT(*) FROM appointments WHERE professionalId = ? AND date = ? AND time = ? AND status NOT IN ('Cancelado')"
         );
         $conflictStmt->execute([
-            sanitize($data['professionalId']),
-            sanitize($data['date']),
-            sanitize($data['time'])
+            $aptProId,
+            $aptDate,
+            $aptTime
         ]);
         if ($conflictStmt->fetchColumn() > 0) {
             http_response_code(409);
@@ -167,9 +305,9 @@ function handleAppointments($db, $method) {
             sanitize($data['clientPhone'] ?? ''),
             sanitize($data['clientEmail'] ?? ''),
             sanitize($data['serviceId']),
-            sanitize($data['professionalId']),
-            sanitize($data['date']),
-            sanitize($data['time']),
+            $aptProId,
+            $aptDate,
+            $aptTime,
             sanitize($data['status']),
             sanitize($data['observations'] ?? '')
         ]);
@@ -180,15 +318,20 @@ function handleAppointments($db, $method) {
         $id = sanitize($_GET['id'] ?? '');
         if (empty($id)) { badRequest('ID é obrigatório'); return; }
 
-        if (isset($data['status']) && !isset($data['userName'])) {
+        if (isset($data['status']) && !isset($data['userName']) && !isset($data['date']) && !isset($data['time'])) {
             // Atualizar apenas o status (admin ou cliente cancelando)
             $validStatuses = ['Agendado', 'Confirmado', 'Em Atendimento', 'Concluído', 'Cancelado'];
             if (!in_array($data['status'], $validStatuses)) {
                 badRequest('Status inválido');
                 return;
             }
-            $stmt = $db->prepare("UPDATE appointments SET status=? WHERE id=?");
-            $stmt->execute([sanitize($data['status']), $id]);
+            if (array_key_exists('totalPrice', $data) && $data['totalPrice'] !== null && $data['totalPrice'] !== '') {
+                $stmt = $db->prepare("UPDATE appointments SET status=?, totalPrice=? WHERE id=?");
+                $stmt->execute([sanitize($data['status']), floatval($data['totalPrice']), $id]);
+            } else {
+                $stmt = $db->prepare("UPDATE appointments SET status=? WHERE id=?");
+                $stmt->execute([sanitize($data['status']), $id]);
+            }
         } elseif (isset($data['rating'])) {
             // Adicionar review
             $rating = intval($data['rating']);
@@ -196,29 +339,52 @@ function handleAppointments($db, $method) {
             $stmt = $db->prepare("UPDATE appointments SET rating=?, reviewComment=? WHERE id=?");
             $stmt->execute([$rating, sanitize($data['reviewComment'] ?? ''), $id]);
         } else {
-            // Atualização completa (admin editando)
-            requireAdminAuth();
-            
             // Buscar existente para preservar campos como userId que podem não vir no payload
             $checkStmt = $db->prepare("SELECT * FROM appointments WHERE id=?");
             $checkStmt->execute([$id]);
             $existing = $checkStmt->fetch();
             if (!$existing) { badRequest('Agendamento não encontrado'); return; }
 
-            $stmt = $db->prepare("UPDATE appointments SET userId=?, userName=?, clientPhone=?, clientEmail=?, serviceId=?, professionalId=?, date=?, time=?, status=?, observations=? WHERE id=?");
+            $targetDate = sanitize($data['date'] ?? $existing['date']);
+            $targetTime = sanitize($data['time'] ?? $existing['time']);
+            $targetProId = sanitize($data['professionalId'] ?? $existing['professionalId']);
+            $targetServiceId = sanitize($data['serviceId'] ?? $existing['serviceId']);
+            $targetStatus = sanitize($data['status'] ?? $existing['status']);
+            $totalPrice = array_key_exists('totalPrice', $data)
+                ? ($data['totalPrice'] === null || $data['totalPrice'] === '' ? null : floatval($data['totalPrice']))
+                : ($existing['totalPrice'] ?? null);
+
+            if ($targetStatus !== 'Cancelado') {
+                $duration = getServiceTotalDuration($db, $targetServiceId);
+                $startMin = timeToMinutes($targetTime);
+                $newItems = [[
+                    'professionalId' => $targetProId,
+                    'startTime' => $targetTime,
+                    'endTime' => minutesToTime($startMin + $duration)
+                ]];
+                if (hasBlockedSlotConflict($db, 'default', $targetDate, $newItems)) {
+                    http_response_code(409);
+                    echo json_encode(['error' => 'Conflito: este período ou horário está bloqueado na agenda.']);
+                    return;
+                }
+            }
+
+            $stmt = $db->prepare("UPDATE appointments SET userId=?, userName=?, clientPhone=?, clientEmail=?, serviceId=?, professionalId=?, date=?, time=?, status=?, totalPrice=?, observations=? WHERE id=?");
             $stmt->execute([
                 sanitize($data['userId'] ?? $existing['userId']),
                 sanitize($data['userName'] ?? $existing['userName']),
                 sanitize($data['clientPhone'] ?? $existing['clientPhone']),
                 sanitize($data['clientEmail'] ?? $existing['clientEmail']),
-                sanitize($data['serviceId'] ?? $existing['serviceId']),
-                sanitize($data['professionalId'] ?? $existing['professionalId']),
-                sanitize($data['date'] ?? $existing['date']),
-                sanitize($data['time'] ?? $existing['time']),
-                sanitize($data['status'] ?? $existing['status']),
+                $targetServiceId,
+                $targetProId,
+                $targetDate,
+                $targetTime,
+                $targetStatus,
+                $totalPrice,
                 sanitize($data['observations'] ?? $existing['observations']),
                 $id
             ]);
+            $data['totalPrice'] = $totalPrice;
         }
         echo json_encode($data);
     }
@@ -315,7 +481,8 @@ function validateServiceData($data) {
         badRequest('durationMinutes deve ser um número positivo');
         return false;
     }
-    if (!isset($data['price']) || floatval($data['price']) < 0) {
+    $priceType = $data['priceType'] ?? 'fixed';
+    if ($priceType !== 'variable' && (!isset($data['price']) || floatval($data['price']) < 0)) {
         badRequest('price deve ser um número não-negativo');
         return false;
     }

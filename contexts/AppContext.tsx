@@ -18,6 +18,7 @@ interface AppContextType extends AppState {
   updateProfessional: (id: string, pro: Partial<Professional>) => Promise<void>;
   deleteProfessional: (id: string) => Promise<void>;
   updateBusinessConfig: (config: BusinessConfig) => Promise<void>;
+  refreshAppointments: () => Promise<void>;
   verifyAdminPassword: (password: string) => Promise<string | false>;
   changeAdminPassword: (newPassword: string) => Promise<void>;
 }
@@ -185,10 +186,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch (e) { console.error(e); }
   }
 
+  const refreshAppointments = async () => {
+      try {
+        const [loadedApts, loadedConfig] = await Promise.all([
+          dbAppointments.getAll(),
+          dbConfig.get()
+        ]);
+        setAppointments(loadedApts);
+        setBusinessConfig(loadedConfig);
+      } catch (e) {
+        console.error(e);
+      }
+  };
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'businessConfigUpdated' || e.key === 'appointmentsUpdated') {
+        refreshAppointments();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
   const updateBusinessConfig = async (config: BusinessConfig) => {
       try {
         const updated = await dbConfig.save(config);
         setBusinessConfig(updated);
+        try {
+          localStorage.setItem('businessConfigUpdated', String(Date.now()));
+        } catch (_) {}
       } catch (e) { console.error(e); }
   }
 
@@ -209,7 +236,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     <AppContext.Provider value={{
       user, services, professionals, appointments, businessConfig, isLoading,
       login, logout, addAppointment, updateAppointmentStatus, updateAppointment, addReview, addService, updateService, deleteService,
-      addProfessional, updateProfessional, deleteProfessional, updateBusinessConfig,
+      addProfessional, updateProfessional, deleteProfessional, updateBusinessConfig, refreshAppointments,
       verifyAdminPassword, changeAdminPassword
     }}>
       {children}

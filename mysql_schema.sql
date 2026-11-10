@@ -9,9 +9,11 @@ SET time_zone = "+00:00";
 CREATE TABLE IF NOT EXISTS `services` (
   `id` varchar(50) NOT NULL,
   `name` varchar(255) NOT NULL,
+  `groupName` varchar(255) DEFAULT NULL,
   `description` text,
   `durationMinutes` int(11) NOT NULL,
   `price` decimal(10,2) NOT NULL,
+  `priceType` varchar(20) NOT NULL DEFAULT 'fixed',
   `imageUrl` text,
   `observation` text,
   PRIMARY KEY (`id`)
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   `date` date NOT NULL,
   `time` varchar(10) NOT NULL,
   `status` varchar(50) NOT NULL,
+  `totalPrice` decimal(10,2) DEFAULT NULL,
   `rating` int(11),
   `observations` text,
   `reviewComment` text,

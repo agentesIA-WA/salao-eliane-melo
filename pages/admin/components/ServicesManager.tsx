@@ -6,6 +6,8 @@ import { Calendar as CalendarIcon, Users, Scissors, MessageCircle, TrendingUp, P
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { getGoogleDriveThumbnail, isGoogleDriveLink } from '../../../services/driveUtils';
+import { getAdminToken } from '../../../services/db';
+import { formatServicePrice, isVariablePriceService, formatCurrencyMask, parseCurrencyMask } from '../../../services/serviceGroups';
 import * as XLSX from 'xlsx';
 
 const ServicesManager: React.FC = () => {
@@ -13,7 +15,9 @@ const ServicesManager: React.FC = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isImportModalOpen, setIsImportModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
-    const [serviceForm, setServiceForm] = useState<Partial<Service>>({ name: '', price: 0, durationMinutes: 60, imageUrl: '', observation: '' });
+    const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+    const [serviceForm, setServiceForm] = useState<Partial<Service>>({ name: '', groupName: '', price: 0, priceType: 'fixed', durationMinutes: 60, imageUrl: '', observation: '' });
+    const [formError, setFormError] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
     const [imageInputMode, setImageInputMode] = useState<'upload' | 'url'>('upload');
@@ -23,20 +27,224 @@ const ServicesManager: React.FC = () => {
     const [isImporting, setIsImporting] = useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const importFileInputRef = React.useRef<HTMLInputElement>(null);
+    const existingGroups = Array.from(new Set(
+        services.map(service => service.groupName?.trim()).filter((groupName): groupName is string => Boolean(groupName))
+    )).sort((firstGroup, secondGroup) => firstGroup.localeCompare(secondGroup, 'pt-BR'));
+
+    // Helper functions for import
+    const downloadTemplate = () => {
+        const templateData = [
+            { 
+                'Nome*': 'Corte Feminino', 
+                'Grupo': 'Cabelo', 
+                'Descrição': 'Corte com lavagem e finalização', 
+                'Preço*': 85.00, 
+                'Duração (min)': 60, 
+                'Observação': 'Inclui lavagem e secagem',
+                'Imagem URL': ''
+            },
+            { 
+                'Nome*': 'Manicure Simples', 
+                'Grupo': 'Unhas', 
+                'Descrição': 'Corte, lixamento e esmaltação', 
+                'Preço*': 35.00, 
+                'Duração (min)': 45, 
+                'Observação': 'Esmalte não incluso',
+                'Imagem URL': ''
+            },
+            { 
+                'Nome*': 'Limpeza de Pele', 
+                'Grupo': 'Estética', 
+                'Descrição': 'Limpeza profunda com extração', 
+                'Preço*': 120.00, 
+                'Duração (min)': 90, 
+                'Observação': 'Não indicado para pele sensível',
+                'Imagem URL': ''
+            },
+        ];
+
+        const ws = XLSX.utils.json_to_sheet(templateData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Serviços');
+        XLSX.writeFile(wb, 'modelo_servicos.xlsx');
+    };
+
+    const handleImportFileSelect = (file: File) => {
+        if (file.size > 5 * 1024 * 1024) {
+            setImportError('Arquivo muito grande. Tamanho máximo: 5MB');
+            return;
+        }
+
+        setImportFile(file);
+        setImportError('');
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target?.result as ArrayBuffer);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+                const preview: Partial<Service>[] = [];
+                const errors: string[] = [];
+
+                jsonData.forEach((row: any, index: number) => {
+                    const rowNum = index + 2; // +2 because header is row 1, 0-indexed
+                    const name = (row['Nome*'] || row['Nome'] || row['nome'] || '').toString().trim();
+                    const groupName = (row['Grupo'] || row['grupo'] || '').toString().trim();
+                    const description = (row['Descrição'] || row['Descricao'] || row['descrição'] || row['descricao'] || '').toString().trim();
+                    const rawPriceType = (row['Tipo Valor'] || row['Tipo de Valor'] || row['tipo_valor'] || '').toString().trim().toLowerCase();
+                    const rawPriceStr = (row['Preço*'] || row['Preco*'] || row['Preço'] || row['Preco'] || row['preço'] || row['preco'] || '0').toString().trim();
+                    const isVar = rawPriceType.includes('vari') || rawPriceStr.toLowerCase().includes('vari') || rawPriceStr.toLowerCase().includes('combinar');
+                    const price = isVar ? 0 : parseFloat(rawPriceStr.replace(',', '.'));
+                    const durationMinutes = parseInt((row['Duração (min)'] || row['Duracao (min)'] || row['Duração'] || row['Duracao'] || row['duração'] || row['duracao'] || '60').toString()) || 60;
+                    const observation = (row['Observação'] || row['Observacao'] || row['observação'] || row['observacao'] || '').toString().trim();
+                    const imageUrl = (row['Imagem URL'] || row['Imagem'] || row['imagem'] || row['Image URL'] || row['image'] || '').toString().trim();
+
+                    if (!name) {
+                        errors.push(`Linha ${rowNum}: Nome é obrigatório`);
+                        return;
+                    }
+                    if (!isVar && (isNaN(price) || price <= 0)) {
+                        errors.push(`Linha ${rowNum}: Preço inválido (ou informe 'Variável')`);
+                        return;
+                    }
+
+                    preview.push({
+                        name,
+                        groupName: groupName || '',
+                        description: description || 'Serviço importado via planilha',
+                        price: isVar ? 0 : price,
+                        priceType: isVar ? 'variable' : 'fixed',
+                        durationMinutes,
+                        observation: observation || '',
+                        imageUrl: imageUrl || `https://picsum.photos/400/300?random=${Date.now() + index}`,
+                    });
+                });
+
+                if (errors.length > 0) {
+                    setImportError(errors.join('; '));
+                    setImportPreview([]);
+                } else if (preview.length === 0) {
+                    setImportError('Nenhum serviço válido encontrado na planilha');
+                    setImportPreview([]);
+                } else {
+                    setImportPreview(preview);
+                }
+            } catch (err) {
+                setImportError('Erro ao ler a planilha. Verifique o formato do arquivo.');
+                setImportPreview([]);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    const handleImportConfirm = async () => {
+        if (importPreview.length === 0 || isImporting) return;
+
+        setIsImporting(true);
+        setImportError('');
+
+        try {
+            for (const svc of importPreview) {
+                await addService({
+                    name: svc.name!,
+                    groupName: svc.groupName?.trim() || '',
+                    price: svc.priceType === 'variable' ? 0 : Number(svc.price),
+                    priceType: svc.priceType || 'fixed',
+                    durationMinutes: Number(svc.durationMinutes || 60),
+                    description: svc.description || 'Serviço importado via planilha',
+                    imageUrl: svc.imageUrl || `https://picsum.photos/400/300?random=${Date.now()}`,
+                    observation: svc.observation || ''
+                });
+            }
+            setIsImportModalOpen(false);
+            setImportFile(null);
+            setImportPreview([]);
+        } catch (err) {
+            setImportError('Erro ao importar serviços. Tente novamente.');
+        } finally {
+            setIsImporting(false);
+        }
+    };
+
+    const compressImageIfNeeded = (file: File): Promise<File> => {
+        return new Promise((resolve) => {
+            const safeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+            if (file.size <= 1.5 * 1024 * 1024 && safeTypes.includes(file.type)) {
+                resolve(file);
+                return;
+            }
+
+            const img = new Image();
+            const objectUrl = URL.createObjectURL(file);
+            img.onload = () => {
+                URL.revokeObjectURL(objectUrl);
+                const maxDim = 1600;
+                let { width, height } = img;
+                if (width > maxDim || height > maxDim) {
+                    if (width > height) {
+                        height = Math.round((height * maxDim) / width);
+                        width = maxDim;
+                    } else {
+                        width = Math.round((width * maxDim) / height);
+                        height = maxDim;
+                    }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    resolve(file);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                canvas.toBlob(
+                    (blob) => {
+                        if (!blob) {
+                            resolve(file);
+                            return;
+                        }
+                        const baseName = file.name.replace(/\.[^.]+$/, '') || 'service';
+                        resolve(new File([blob], `${baseName}.webp`, { type: 'image/webp' }));
+                    },
+                    'image/webp',
+                    0.85
+                );
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                resolve(file);
+            };
+            img.src = objectUrl;
+        });
+    };
 
     const handleImageUpload = async (file: File) => {
         setIsUploading(true);
         setUploadError('');
         try {
+            const processedFile = await compressImageIfNeeded(file);
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append('image', processedFile);
+
+            const token = getAdminToken();
+
             const response = await fetch('./backend/upload.php', {
                 method: 'POST',
+                headers: {
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
                 body: formData,
             });
+
             const result = await response.json();
-            if (result.success && result.imageUrl) {
-                setServiceForm(prev => ({ ...prev, imageUrl: result.imageUrl }));
+            const uploadedUrl = result.imageUrl || result.fileUrl;
+            if (result.success && uploadedUrl) {
+                setServiceForm(prev => ({ ...prev, imageUrl: uploadedUrl }));
             } else {
                 setUploadError(result.error || 'Erro ao enviar imagem.');
             }
@@ -70,7 +278,9 @@ const ServicesManager: React.FC = () => {
 
     const handleAddNew = () => {
         setEditingId(null);
-        setServiceForm({ name: '', price: 0, durationMinutes: 60, imageUrl: '', observation: '' });
+        setIsCreatingGroup(false);
+        setServiceForm({ name: '', groupName: '', price: 0, priceType: 'fixed', durationMinutes: 60, imageUrl: '', observation: '' });
+        setFormError('');
         setUploadError('');
         setImageInputMode('upload');
         setIsModalOpen(true);
@@ -78,29 +288,47 @@ const ServicesManager: React.FC = () => {
 
     const handleEdit = (service: Service) => {
         setEditingId(service.id);
-        setServiceForm({ ...service });
+        setIsCreatingGroup(false);
+        setServiceForm({ ...service, priceType: service.priceType || 'fixed' });
+        setFormError('');
         setUploadError('');
         setImageInputMode(service.imageUrl && (service.imageUrl.startsWith('http') && !service.imageUrl.startsWith('./')) ? 'url' : 'upload');
         setIsModalOpen(true);
     };
 
     const handleSubmit = () => {
-        if (serviceForm.name && serviceForm.price) {
-            if (editingId) {
-                updateService(editingId, serviceForm);
-            } else {
-                addService({
-                    name: serviceForm.name!,
-                    price: Number(serviceForm.price),
-                    durationMinutes: Number(serviceForm.durationMinutes || 60),
-                    description: serviceForm.description || 'Novo serviço',
-                    imageUrl: serviceForm.imageUrl || `https://picsum.photos/400/300?random=${Date.now()}`,
-                    observation: serviceForm.observation || ''
-                });
-            }
-            setIsModalOpen(false);
-            setServiceForm({ name: '', price: 0, durationMinutes: 60, imageUrl: '', observation: '' });
+        const isVariable = serviceForm.priceType === 'variable';
+        const numericPrice = Number(serviceForm.price);
+
+        if (!serviceForm.name?.trim()) {
+            setFormError('Informe o nome do serviço.');
+            return;
         }
+        if (!isVariable && (Number.isNaN(numericPrice) || numericPrice <= 0)) {
+            setFormError('Informe um preço válido maior que zero para serviços de valor fixo.');
+            return;
+        }
+
+        setFormError('');
+        const normalizedPayload: Omit<Service, 'id'> = {
+            name: serviceForm.name.trim(),
+            groupName: serviceForm.groupName?.trim() || '',
+            price: isVariable ? 0 : numericPrice,
+            priceType: isVariable ? 'variable' : 'fixed',
+            durationMinutes: Number(serviceForm.durationMinutes || 60),
+            description: serviceForm.description || 'Novo serviço',
+            imageUrl: serviceForm.imageUrl || `https://picsum.photos/400/300?random=${Date.now()}`,
+            observation: serviceForm.observation || ''
+        };
+
+        if (editingId) {
+            updateService(editingId, normalizedPayload);
+        } else {
+            addService(normalizedPayload);
+        }
+        setIsModalOpen(false);
+        setIsCreatingGroup(false);
+        setServiceForm({ name: '', groupName: '', price: 0, priceType: 'fixed', durationMinutes: 60, imageUrl: '', observation: '' });
     }
 
     return (
@@ -150,6 +378,7 @@ const ServicesManager: React.FC = () => {
                             <div className="flex justify-between items-start gap-2">
                                 <h3 className="font-bold text-slate-900 text-base md:text-lg line-clamp-1">{service.name}</h3>
                             </div>
+                            {service.groupName && <p className="text-xs font-semibold text-primary-600">{service.groupName}</p>}
                             <p className="text-xs text-slate-400 line-clamp-2 md:leading-relaxed">{service.description}</p>
                             
                             {service.observation && (
@@ -160,7 +389,15 @@ const ServicesManager: React.FC = () => {
                             )}
                             
                             <div className="flex justify-between items-center pt-3 border-t border-slate-50">
-                                <span className="text-primary-600 font-extrabold text-base md:text-lg">R$ {Number(service.price).toFixed(2)}</span>
+                                {isVariablePriceService(service) ? (
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-lg font-bold text-xs md:text-sm">
+                                            Valor a combinar
+                                        </span>
+                                    </div>
+                                ) : (
+                                    <span className="text-primary-600 font-extrabold text-base md:text-lg">{formatServicePrice(service)}</span>
+                                )}
                                 <span className="text-[11px] text-slate-500 font-bold bg-slate-100 px-2.5 py-1 rounded-lg flex items-center gap-1"><Clock size={11} />{service.durationMinutes} min</span>
                             </div>
                         </div>
@@ -171,17 +408,151 @@ const ServicesManager: React.FC = () => {
             <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? "Editar Serviço" : "Adicionar Novo Serviço"}>
                 <div className="space-y-4">
                     <Input label="Código/Nome do Serviço" value={serviceForm.name} onChange={e => setServiceForm({...serviceForm, name: e.target.value})} placeholder="Ex: Escova Paris" />
-                    <Input label="Descrição do Atendimento" value={serviceForm.description || ''} onChange={e => setServiceForm({...serviceForm, description: e.target.value})} placeholder="Lavagem especial com ativos de caviar..." />
-                    <div className="grid grid-cols-2 gap-4">
-                         <Input type="number" label="Preço Praticado (R$)" value={serviceForm.price} onChange={e => setServiceForm({...serviceForm, price: parseFloat(e.target.value)})} />
-                         <Input 
-                            type="number" 
-                            label="Tempo Estipulado (minutos)" 
-                            value={serviceForm.durationMinutes} 
-                            onChange={e => setServiceForm({...serviceForm, durationMinutes: parseInt(e.target.value)})} 
-                            placeholder="Ex: 60"
-                         />
+                    <div>
+                        <label htmlFor="service-group" className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Grupo (opcional)</label>
+                        {!isCreatingGroup ? (
+                            <select
+                                id="service-group"
+                                value={serviceForm.groupName || ''}
+                                onChange={e => {
+                                    if (e.target.value === '__new_group__') {
+                                        setIsCreatingGroup(true);
+                                        setServiceForm(current => ({ ...current, groupName: '' }));
+                                    } else {
+                                        setServiceForm(current => ({ ...current, groupName: e.target.value }));
+                                    }
+                                }}
+                                className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 focus:bg-white text-slate-800 text-sm"
+                            >
+                                <option value="">Sem grupo</option>
+                                {existingGroups.map(groupName => <option key={groupName} value={groupName}>{groupName}</option>)}
+                                <option value="__new_group__">Cadastrar novo grupo...</option>
+                            </select>
+                        ) : (
+                            <div className="space-y-2">
+                                <Input
+                                    label=""
+                                    autoFocus
+                                    value={serviceForm.groupName || ''}
+                                    onChange={e => setServiceForm(current => ({ ...current, groupName: e.target.value }))}
+                                    placeholder="Digite o nome do novo grupo"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsCreatingGroup(false);
+                                        setServiceForm(current => ({ ...current, groupName: '' }));
+                                    }}
+                                    className="text-xs font-semibold text-primary-600 hover:text-primary-700"
+                                >
+                                    Escolher grupo existente
+                                </button>
+                            </div>
+                        )}
                     </div>
+                    <Input label="Descrição do Atendimento" value={serviceForm.description || ''} onChange={e => setServiceForm({...serviceForm, description: e.target.value})} placeholder="Lavagem especial com ativos de caviar..." />
+                    
+                    <fieldset className="space-y-2">
+                        <legend className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Tipo de Valor do Serviço</legend>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label
+                                htmlFor="price-type-fixed"
+                                className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                                    (serviceForm.priceType || 'fixed') === 'fixed'
+                                        ? 'border-primary-500 bg-primary-50/40 ring-2 ring-primary-500/10'
+                                        : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
+                                }`}
+                            >
+                                <input
+                                    id="price-type-fixed"
+                                    type="radio"
+                                    name="priceType"
+                                    value="fixed"
+                                    checked={(serviceForm.priceType || 'fixed') === 'fixed'}
+                                    onChange={() => {
+                                        setFormError('');
+                                        setServiceForm(prev => ({ ...prev, priceType: 'fixed' }));
+                                    }}
+                                    className="mt-0.5 accent-pink-600"
+                                />
+                                <div>
+                                    <span className="block text-sm font-bold text-slate-800">Valor Fixo</span>
+                                    <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">Preço tabelado exibido no agendamento</span>
+                                </div>
+                            </label>
+
+                            <label
+                                htmlFor="price-type-variable"
+                                className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                                    serviceForm.priceType === 'variable'
+                                        ? 'border-amber-500 bg-amber-50/50 ring-2 ring-amber-500/10'
+                                        : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
+                                }`}
+                            >
+                                <input
+                                    id="price-type-variable"
+                                    type="radio"
+                                    name="priceType"
+                                    value="variable"
+                                    checked={serviceForm.priceType === 'variable'}
+                                    onChange={() => {
+                                        setFormError('');
+                                        setServiceForm(prev => ({ ...prev, priceType: 'variable', price: 0 }));
+                                    }}
+                                    className="mt-0.5 accent-amber-600"
+                                />
+                                <div>
+                                    <span className="block text-sm font-bold text-slate-800">Valor Variável</span>
+                                    <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">Negociado e informado no ato da execução</span>
+                                </div>
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    {serviceForm.priceType === 'variable' ? (
+                        <div className="space-y-3">
+                            <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl flex items-start gap-2.5">
+                                <Info size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                                <p className="text-xs text-amber-800 leading-relaxed">
+                                    Para serviços de <strong>valor variável</strong>, o cliente verá <em>"Valor a combinar / Sob avaliação"</em> no agendamento. O valor total negociado será solicitado ao profissional/usuário na execução ou conclusão do atendimento.
+                                </p>
+                            </div>
+                            <Input 
+                                type="number" 
+                                label="Tempo Estipulado (minutos)" 
+                                value={serviceForm.durationMinutes} 
+                                onChange={e => setServiceForm({...serviceForm, durationMinutes: parseInt(e.target.value)})} 
+                                placeholder="Ex: 60"
+                            />
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-4">
+                             <Input
+                                type="text"
+                                inputMode="numeric"
+                                label="Preço Praticado (R$)"
+                                placeholder="R$ 0,00"
+                                value={formatCurrencyMask(serviceForm.price)}
+                                onChange={e => {
+                                    setFormError('');
+                                    setServiceForm({ ...serviceForm, price: parseCurrencyMask(e.target.value) });
+                                }}
+                             />
+                             <Input 
+                                type="number" 
+                                label="Tempo Estipulado (minutos)" 
+                                value={serviceForm.durationMinutes} 
+                                onChange={e => setServiceForm({...serviceForm, durationMinutes: parseInt(e.target.value)})} 
+                                placeholder="Ex: 60"
+                             />
+                        </div>
+                    )}
+                    {formError && (
+                        <div role="alert" aria-live="polite" className="p-2.5 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2">
+                            <AlertCircle size={14} className="text-red-500 shrink-0" />
+                            <p className="text-xs font-semibold text-red-700">{formError}</p>
+                        </div>
+                    )}
                     <div>
                         <label className="block text-xs md:text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Observação (opcional)</label>
                         <textarea 
@@ -348,7 +719,7 @@ const ServicesManager: React.FC = () => {
             </Modal>
 
             {/* Import Modal */}
-            <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="Importar Serviços via Planilha" size="lg">
+            <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="Importar Serviços via Planilha">
                 <div className="space-y-4">
                     {/* Download Template */}
                     <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
@@ -361,7 +732,7 @@ const ServicesManager: React.FC = () => {
                         </div>
                         <button
                             onClick={downloadTemplate}
-                            className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                            className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium cursor-pointer"
                         >
                             <Download size={16} /> Baixar Modelo (.xlsx)
                         </button>
@@ -409,17 +780,26 @@ const ServicesManager: React.FC = () => {
                                             <p className="text-xs text-green-600">{(importFile.size / 1024).toFixed(1)} KB</p>
                                         </div>
                                         <button
-                                            onClick={() => { setImportFile(null); setImportPreview([]); setImportError(''); importFileInputRef.current!.value = ''; }}
-                                            className="text-red-500 hover:text-red-700 p-1"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setImportFile(null);
+                                                setImportPreview([]);
+                                                setImportError('');
+                                                if (importFileInputRef.current) importFileInputRef.current.value = '';
+                                            }}
+                                            className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
                                         >
                                             <X size={20} />
                                         </button>
                                     </div>
                                     {importPreview.length > 0 && (
                                         <button
-                                            onClick={handleImportConfirm}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleImportConfirm();
+                                            }}
                                             disabled={isImporting}
-                                            className="w-full max-w-md px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                                            className="w-full max-w-md px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-medium disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                                         >
                                             {isImporting ? (
                                                 <>
@@ -467,7 +847,7 @@ const ServicesManager: React.FC = () => {
                                         <p className="font-medium text-slate-900 text-sm truncate">{svc.name}</p>
                                         <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500">
                                             {svc.groupName && <span className="px-2 py-0.5 bg-primary-50 text-primary-700 rounded text-xs">{svc.groupName}</span>}
-                                            <span>R$ {Number(svc.price).toFixed(2)}</span>
+                                            <span>{formatServicePrice(svc)}</span>
                                             <span>{svc.durationMinutes} min</span>
                                         </div>
                                     </div>
@@ -485,7 +865,7 @@ const ServicesManager: React.FC = () => {
                             <li>• <strong>Nome</strong> (obrigatório): Nome do serviço</li>
                             <li>• <strong>Grupo</strong> (opcional): Categoria do serviço (ex: Cabelo, Unhas, Estética)</li>
                             <li>• <strong>Descrição</strong> (opcional): Detalhes do atendimento</li>
-                            <li>• <strong>Preço</strong> (obrigatório): Valor em reais (ex: 85.00)</li>
+                            <li>• <strong>Preço</strong> (obrigatório): Valor em reais (ex: 85.00) ou "Variável"</li>
                             <li>• <strong>Duração (min)</strong> (opcional): Tempo em minutos (padrão: 60)</li>
                             <li>• <strong>Observação</strong> (opcional): Informações extras para o cliente</li>
                             <li>• <strong>Imagem URL</strong> (opcional): Link da foto do serviço</li>
@@ -496,140 +876,5 @@ const ServicesManager: React.FC = () => {
         </div>
     )
 }
-
-// Helper functions for import
-const downloadTemplate = () => {
-    const templateData = [
-        { 
-            'Nome*': 'Corte Feminino', 
-            'Grupo': 'Cabelo', 
-            'Descrição': 'Corte com lavagem e finalização', 
-            'Preço*': 85.00, 
-            'Duração (min)': 60, 
-            'Observação': 'Inclui lavagem e secagem',
-            'Imagem URL': ''
-        },
-        { 
-            'Nome*': 'Manicure Simples', 
-            'Grupo': 'Unhas', 
-            'Descrição': 'Corte, lixamento e esmaltação', 
-            'Preço*': 35.00, 
-            'Duração (min)': 45, 
-            'Observação': 'Esmalte não incluso',
-            'Imagem URL': ''
-        },
-        { 
-            'Nome*': 'Limpeza de Pele', 
-            'Grupo': 'Estética', 
-            'Descrição': 'Limpeza profunda com extração', 
-            'Preço*': 120.00, 
-            'Duração (min)': 90, 
-            'Observação': 'Não indicado para pele sensível',
-            'Imagem URL': ''
-        },
-    ];
-
-    const ws = XLSX.utils.json_to_sheet(templateData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Serviços');
-    XLSX.writeFile(wb, 'modelo_servicos.xlsx');
-};
-
-const handleImportFileSelect = (file: File) => {
-    if (file.size > 5 * 1024 * 1024) {
-        setImportError('Arquivo muito grande. Tamanho máximo: 5MB');
-        return;
-    }
-
-    setImportFile(file);
-    setImportError('');
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const data = new Uint8Array(e.target?.result as ArrayBuffer);
-            const workbook = XLSX.read(data, { type: 'array' });
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-
-            const preview: Partial<Service>[] = [];
-            const errors: string[] = [];
-
-            jsonData.forEach((row: any, index: number) => {
-                const rowNum = index + 2; // +2 because header is row 1, 0-indexed
-                const name = (row['Nome*'] || row['Nome'] || row['nome'] || '').toString().trim();
-                const groupName = (row['Grupo'] || row['grupo'] || '').toString().trim();
-                const description = (row['Descrição'] || row['Descricao'] || row['descrição'] || row['descricao'] || '').toString().trim();
-                const price = parseFloat((row['Preço*'] || row['Preco*'] || row['Preço'] || row['Preco'] || row['preço'] || row['preco'] || '0').toString().replace(',', '.'));
-                const durationMinutes = parseInt((row['Duração (min)'] || row['Duracao (min)'] || row['Duração'] || row['Duracao'] || row['duração'] || row['duracao'] || '60').toString()) || 60;
-                const observation = (row['Observação'] || row['Observacao'] || row['observação'] || row['observacao'] || '').toString().trim();
-                const imageUrl = (row['Imagem URL'] || row['Imagem'] || row['imagem'] || row['Image URL'] || row['image'] || '').toString().trim();
-
-                if (!name) {
-                    errors.push(`Linha ${rowNum}: Nome é obrigatório`);
-                    return;
-                }
-                if (isNaN(price) || price <= 0) {
-                    errors.push(`Linha ${rowNum}: Preço inválido`);
-                    return;
-                }
-
-                preview.push({
-                    name,
-                    groupName: groupName || '',
-                    description: description || 'Serviço importado via planilha',
-                    price,
-                    durationMinutes,
-                    observation: observation || '',
-                    imageUrl: imageUrl || `https://picsum.photos/400/300?random=${Date.now() + index}`,
-                });
-            });
-
-            if (errors.length > 0) {
-                setImportError(errors.join('; '));
-                setImportPreview([]);
-            } else if (preview.length === 0) {
-                setImportError('Nenhum serviço válido encontrado na planilha');
-                setImportPreview([]);
-            } else {
-                setImportPreview(preview);
-            }
-        } catch (err) {
-            setImportError('Erro ao ler a planilha. Verifique o formato do arquivo.');
-            setImportPreview([]);
-        }
-    };
-    reader.readAsArrayBuffer(file);
-};
-
-const handleImportConfirm = async () => {
-    if (importPreview.length === 0 || isImporting) return;
-
-    setIsImporting(true);
-    setImportError('');
-
-    try {
-        for (const svc of importPreview) {
-            await addService({
-                name: svc.name!,
-                groupName: svc.groupName?.trim() || '',
-                price: Number(svc.price),
-                durationMinutes: Number(svc.durationMinutes || 60),
-                description: svc.description || 'Serviço importado via planilha',
-                imageUrl: svc.imageUrl || `https://picsum.photos/400/300?random=${Date.now()}`,
-                observation: svc.observation || ''
-            });
-        }
-        setIsImportModalOpen(false);
-        setImportFile(null);
-        setImportPreview([]);
-    } catch (err) {
-        setImportError('Erro ao importar serviços. Tente novamente.');
-    } finally {
-        setIsImporting(false);
-    }
-};
-
 
 export default ServicesManager;

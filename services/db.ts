@@ -224,7 +224,11 @@ function normalizeBusinessConfig(raw: unknown): BusinessConfig {
         };
     }
 
-    return { ...base, ...cfg, days } as BusinessConfig;
+    const blockedSlots = Array.isArray(cfg.blockedSlots)
+        ? cfg.blockedSlots
+        : (Array.isArray(base.blockedSlots) ? base.blockedSlots : []);
+
+    return { ...base, ...cfg, days, blockedSlots } as BusinessConfig;
 }
 
 export const dbConfig = {
@@ -233,6 +237,7 @@ export const dbConfig = {
         return normalizeBusinessConfig(raw);
     },
     save: async (config: BusinessConfig): Promise<BusinessConfig> => {
-        return apiFetch('config', { method: 'POST', body: JSON.stringify(config) });
+        const raw = await apiFetch('config', { method: 'POST', body: JSON.stringify(config) });
+        return normalizeBusinessConfig(raw);
     }
 }
